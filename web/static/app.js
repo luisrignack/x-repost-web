@@ -264,6 +264,9 @@ function todayISO() {
 
 // --- fechas: la interfaz usa DD/MM/AAAA; la API y el motor trabajan en ISO ---
 
+const DAY_RE = /^(0[1-9]|[12]\d|3[01])$/;
+const MONTH_RE = /^(0[1-9]|1[0-2])$/;
+
 function isoToDMY(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
   return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso || "");
@@ -287,6 +290,25 @@ function dmyToISO(value) {
   return `${year}-${month}-${day}`;
 }
 
+// Motivo por el que una fecha DD/MM/AAAA no sirve ("" si es correcta).
+function dateError(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "escribe una fecha.";
+  if (digits.length !== 8) return "completa la fecha (DD/MM/AAAA).";
+  if (!dmyToISO(value)) return "esa fecha no existe en el calendario.";
+  const year = Number(digits.slice(4, 8));
+  if (year < 2006 || year > 2100) return "el año debe estar entre 2006 y 2100.";
+  return "";
+}
+
+// Dibuja DD/MM/AAAA a partir de los dígitos tecleados.
+function maskDate(value) {
+  const digits = String(value || "").replace(/\D/g, "").slice(0, 8);
+  if (digits.length > 4) return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+  if (digits.length > 2) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return digits;
+}
+
 // Marca de tiempo ISO -> DD/MM/YYYY HH:MM (para el historial).
 function fmtDateTime(value) {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(String(value || ""));
@@ -295,19 +317,57 @@ function fmtDateTime(value) {
   return `${day}/${month}/${year}` + (hh ? ` ${hh}:${mm}` : "");
 }
 
-// Máscara DD/MM/AAAA: el usuario escribe 8 dígitos y las barras salen solas.
+// Máscara DD/MM/AAAA: barras automáticas y rechazo de días/meses imposibles
+// mientras se escribe (90/90/... no llega a mostrarse).
 function attachDateMask(input) {
+  let last = maskDate(input.value);
+
+  const paint = () => {
+    input.value = last;
+    input.setSelectionRange(last.length, last.length);
+    const error = last.replace(/\D/g, "").length === 8 ? dateError(last) : "";
+    input.classList.toggle("invalid", Boolean(error));
+    input.title = error ? error.charAt(0).toUpperCase() + error.slice(1) : "";
+  };
+
   input.addEventListener("input", () => {
-    const digits = input.value.replace(/\D/g, "").slice(0, 8);
-    let out = digits;
-    if (digits.length > 4) {
-      out = `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
-    } else if (digits.length > 2) {
-      out = `${digits.slice(0, 2)}/${digits.slice(2)}`;
+    let digits = input.value.replace(/\D/g, "").slice(0, 8);
+    // Auto-relleno: "9" pasa a "09" (día o mes) para no trabar el tecleo.
+    if (digits.length === 1 && digits > "3") {
+      digits = "0" + digits;
+    } else if (digits.length === 3 && digits[2] > "1") {
+      digits = digits.slice(0, 2) + "0" + digits[2];
     }
-    input.value = out;
-    input.setSelectionRange(out.length, out.length);
+    const day = digits.slice(0, 2);
+    const month = digits.slice(2, 4);
+    const dayOk = day.length < 2 || DAY_RE.test(day);
+    const monthOk = month.length < 2 || MONTH_RE.test(month);
+    if (dayOk && monthOk) last = maskDate(digits);
+    paint();
   });
+
+  input.addEventListener("blur", paint);
+  paint();
+}
+
+// Calendario nativo: el botón abre el selector y vuelca el valor como DD/MM/AAAA.
+function attachDatePicker(input, native) {
+  native.addEventListener("input", () => {
+    if (!native.value) return;
+    input.value = isoToDMY(native.value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  return () => {
+    const iso = dmyToISO(input.value);
+    if (iso) native.value = iso;
+    try {
+      if (typeof native.showPicker === "function") native.showPicker();
+      else native.click();
+    } catch (error) {
+      native.click();
+    }
+  };
 }
 
 function toast(message, kind = "") {
@@ -366,12 +426,10 @@ function formParams() {
 
 function validateParams(params) {
   if (!params.users) throw new Error("Indica al menos una cuenta.");
-  if (!els.from.value.trim() || !els.to.value.trim()) {
-    throw new Error("Escribe la fecha inicial y la final (DD/MM/AAAA).");
-  }
-  if (!params.from || !params.to) {
-    throw new Error("Fecha no válida. Usa DD/MM/AAAA, por ejemplo 28/10/2026.");
-  }
+  const fromError = dateError(els.from.value);
+  if (fromError) throw new Error(`Fecha desde: ${fromError}`);
+  const toError = dateError(els.to.value);
+  if (toError) throw new Error(`Fecha hasta: ${toError}`);
   if (params.from > params.to) throw new Error("La fecha inicial no puede ser posterior a la final.");
   if (!(params.limit >= 1 && params.limit <= 50)) throw new Error("El máximo debe estar entre 1 y 50.");
   if (!(params.delay >= 5 && params.delay <= 300)) throw new Error("La pausa debe estar entre 5 y 300 segundos.");
@@ -836,10 +894,19 @@ function init() {
   attachDateMask(els.from);
   attachDateMask(els.to);
 
+  const openFrom = attachDatePicker(els.from, $("#from-native"));
+  const openTo = attachDatePicker(els.to, $("#to-native"));
+  $$(".date-pick").forEach((button) => {
+    button.addEventListener("click", button.dataset.pick === "from" ? openFrom : openTo);
+  });
+
   els.from.addEventListener("input", () => {
     const from = dmyToISO(els.from.value);
     const to = dmyToISO(els.to.value);
-    if (from && to && from > to) els.to.value = isoToDMY(from);
+    if (from && to && from > to) {
+      els.to.value = isoToDMY(from);
+      els.to.dispatchEvent(new Event("input", { bubbles: true }));
+    }
     invalidatePreview();
   });
   els.to.addEventListener("input", invalidatePreview);

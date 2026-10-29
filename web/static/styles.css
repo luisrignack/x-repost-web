@@ -240,6 +240,51 @@ input:focus-visible {
 
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
+/* Campo de fecha: texto DD/MM/AAAA + botón que abre el calendario nativo. */
+.date-field { position: relative; }
+.date-field input[type="text"] { padding-right: 48px; }
+
+.date-pick {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.date-pick:hover { color: var(--accent); background: var(--accent-soft); border-color: var(--line); }
+.date-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.date-native {
+  position: absolute;
+  right: 8px;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.date-field input.invalid {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+
+.date-help { display: block; margin: -4px 0 14px; color: var(--muted); font-size: 12px; }
+
 .scope {
   margin: 2px 0 16px;
   padding: 0;
