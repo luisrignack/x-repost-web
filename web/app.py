@@ -51,6 +51,7 @@ MAX_JOB_SECONDS = 30 * 60
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DATE_DMY_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
 HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 STATUS_RE = re.compile(
     r"^https?://(?:www\.)?(?:x|twitter)\.com/(?:[A-Za-z0-9_]+|i)/status/\d+/?$"
@@ -109,10 +110,21 @@ def normalize_users(users: str) -> str:
     return ",".join(handles)
 
 
+def normalize_date(value: str) -> str:
+    """Convierte DD/MM/AAAA (lo que ve el usuario) a ISO. Acepta ISO también."""
+    value = value.strip()
+    if DATE_DMY_RE.fullmatch(value):
+        day, month, year = value.split("/")
+        value = f"{year}-{month}-{day}"
+    if not DATE_RE.fullmatch(value):
+        raise HttpError(400, "Las fechas deben tener el formato DD/MM/AAAA.")
+    return value
+
+
 def validate_repost_params(data: dict, *, apply: bool) -> dict:
     users = normalize_users(str(data.get("users", "")))
-    frm = str(data.get("from", "")).strip()
-    to = str(data.get("to", "")).strip() or frm
+    frm = normalize_date(str(data.get("from", "")))
+    to = normalize_date(str(data.get("to", "")).strip() or frm)
     scope = str(data.get("scope", "originals"))
     match = str(data.get("match", "")).strip()
     exclude = str(data.get("exclude", "")).strip()
@@ -124,8 +136,6 @@ def validate_repost_params(data: dict, *, apply: bool) -> dict:
     for handle in users.split(","):
         if not HANDLE_RE.fullmatch(handle):
             raise HttpError(400, f"Cuenta no válida: @{handle}. Usa solo letras, números y guion bajo.")
-    if not DATE_RE.fullmatch(frm) or not DATE_RE.fullmatch(to):
-        raise HttpError(400, "Las fechas deben tener el formato AAAA-MM-DD.")
     try:
         d_from = dt.date.fromisoformat(frm)
         d_to = dt.date.fromisoformat(to)

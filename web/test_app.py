@@ -366,12 +366,18 @@ class WebTest(unittest.TestCase):
         self.assertIn(b"| Fecha |", md_body)
         self.assertFalse(self.history.exists())
 
+    def test_preview_accepts_dd_mm_yyyy(self):
+        job = self.preview(**{"from": "01/02/2024", "to": "29/02/2024"})
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["params"]["from"], "2024-02-01")
+        self.assertEqual(job["params"]["to"], "2024-02-29")
+
     def test_preview_validation_errors(self):
         cases = [
             {"users": ""},
             {"users": "mal-handle"},
             {"users": ",".join(f"u{i}" for i in range(11))},
-            {"from": "01/02/2024"},
+            {"from": "31/02/2024"},
             {"from": "2024-02-30"},
             {"from": "2024-03-01", "to": "2024-02-01"},
             {"scope": "otro"},

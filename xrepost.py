@@ -72,6 +72,20 @@ LABELS = {
 def label(res):
     return LABELS.get(res, res)
 
+
+def fmt_fecha(value):
+    """Fecha visible DD/MM/YYYY HH:MM.
+
+    Acepta ISO (2026-10-28T15:38:00Z, lo que devuelve el DOM de X) o un valor
+    que ya venga en DD/MM/YYYY (por ejemplo, el listado revisado del panel web).
+    """
+    s = str(value or "").strip()
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?", s)
+    if m:
+        y, mo, d, hh, mm = m.groups()
+        return f"{d}/{mo}/{y}" + (f" {hh}:{mm}" if hh else "")
+    return s
+
 # Textos de "respuesta" en varios idiomas: solo como respaldo si el DOM no basta.
 REPLY_HINTS = (
     "replying to", "in reply to", "respondiendo a", "en respuesta a",
@@ -302,7 +316,7 @@ def collect(user, d_from, d_to):
     global SKIPPED_RT, SKIPPED_KW
     q = f"from:{user} since:{d_from} until:{next_day(d_to)}"
     url = "https://x.com/search?q=" + quote(q) + "&f=live"
-    print(f"\n[{user}] buscando {d_from} .. {d_to}")
+    print(f"\n[{user}] buscando {fmt_fecha(d_from)} .. {fmt_fecha(d_to)}")
     goto_url(url)
     wait_for_load()
     if not wait_articles():
@@ -378,7 +392,7 @@ def build_rows(posts, statuses, default_status):
     rows = []
     for p in posts:
         rows.append({
-            "fecha": (p.get("time") or "")[:16].replace("T", " "),
+            "fecha": fmt_fecha(p.get("time")),
             "autor": p.get("user", ""),
             "usuario": ("@" + p["handle"]) if p.get("handle") else "",
             "texto": (p.get("text") or "").replace("\n", " ").strip(),
@@ -521,7 +535,7 @@ def main():
 
     print(f"\n{len(found)} posts encontrados:\n")
     for i, p in enumerate(found, 1):
-        print(f"{i:3}. {p['time'][:16]} | {p['user']}")
+        print(f"{i:3}. {fmt_fecha(p['time'])} | {p['user']}")
         print(f"     {p['text'][:150].replace(chr(10), ' ')}")
         print(f"     {p['url']}")
 

@@ -5,9 +5,10 @@
 #   ./xrepost.sh                          # interactivo (pregunta usuarios, fechas y alcance)
 #   ./xrepost.sh <usuarios> <desde> [hasta]
 #
-# Fechas (modo interactivo): campo AAAA-MM-DD con avance automático (los guiones
-# se insertan solos y al escribir el octavo dígito se acepta). Enter acepta el
+# Fechas (modo interactivo): campo DD/MM/AAAA con avance automático (las barras
+# se insertan solas y al escribir el octavo dígito se acepta). Enter acepta el
 # valor entre corchetes; se valida el calendario y que desde <= hasta.
+# Por argumentos se acepta DD/MM/AAAA (recomendado) o AAAA-MM-DD.
 #
 # Retweets: en modo interactivo se pregunta si se incluyen los retweets que las
 # cuentas hayan hecho de otras cuentas. Por defecto solo se consideran las
@@ -63,13 +64,34 @@ valid_date() {
   [ "$(date -d "$d" +%F 2>/dev/null)" = "$d" ]
 }
 
-# Máscara AAAA-MM-DD para dibujar el campo mientras se escribe.
+# Acepta DD/MM/AAAA (lo que ve el usuario) o AAAA-MM-DD y devuelve ISO.
+# El resto del programa (búsqueda en X, historial, panel web) trabaja en ISO.
+to_iso() {
+  local v="$1" d m y
+  if [[ "$v" =~ ^([0-9]{2})/([0-9]{2})/([0-9]{4})$ ]]; then
+    d="${BASH_REMATCH[1]}"; m="${BASH_REMATCH[2]}"; y="${BASH_REMATCH[3]}"
+  elif [[ "$v" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]]; then
+    y="${BASH_REMATCH[1]}"; m="${BASH_REMATCH[2]}"; d="${BASH_REMATCH[3]}"
+  else
+    return 1
+  fi
+  local iso="$y-$m-$d"
+  valid_date "$iso" || return 1
+  printf '%s' "$iso"
+}
+
+# ISO -> DD/MM/AAAA, solo para mensajes al usuario.
+to_dmy() {
+  printf '%s/%s/%s' "${1:8:2}" "${1:5:2}" "${1:0:4}"
+}
+
+# Máscara DD/MM/AAAA para dibujar el campo mientras se escribe.
 format_mask() {
-  local d="$1" y="${1:0:4}" m="${1:4:2}" day="${1:6:2}"
-  while [ ${#y} -lt 4 ]; do y+="_"; done
-  while [ ${#m} -lt 2 ]; do m+="_"; done
+  local d="$1" day="${1:0:2}" mon="${1:2:2}" y="${1:4:4}"
   while [ ${#day} -lt 2 ]; do day+="_"; done
-  printf '%s-%s-%s' "$y" "$m" "$day"
+  while [ ${#mon} -lt 2 ]; do mon+="_"; done
+  while [ ${#y} -lt 4 ]; do y+="_"; done
+  printf '%s/%s/%s' "$day" "$mon" "$y"
 }
 
 # Campo de fecha con avance automático. $1 = etiqueta, $2 = valor por defecto.
@@ -112,10 +134,10 @@ read_date() {
           continue
         fi
         if [ -z "$digits" ] && [ -n "$def" ]; then
-          digits="${def//-/}"
+          digits="${def//[^0-9]/}"
           break
         fi
-        if [ ${#digits} -eq 8 ] && valid_date "$(format_mask "$digits")"; then
+        if [ ${#digits} -eq 8 ] && to_iso "$(format_mask "$digits")" >/dev/null; then
           break
         fi
         msg="fecha incompleta: faltan dígitos"
@@ -135,7 +157,7 @@ read_date() {
     esac
 
     if [ ${#digits} -eq 8 ]; then
-      if valid_date "$(format_mask "$digits")"; then
+      if to_iso "$(format_mask "$digits")" >/dev/null; then
         drain=1
         break
       fi
@@ -264,7 +286,9 @@ for line in sel:
         continue
     handle = ("@" + e["handle"]) if e.get("handle") else ""
     result = e.get("result", "")
-    print(f"{e.get('ts', '')[:19]}  {e.get('action', ''):6} "
+    ts = e.get("ts", "")
+    disp = f"{ts[8:10]}/{ts[5:7]}/{ts[0:4]} {ts[11:16]}" if len(ts) >= 16 else ts
+    print(f"{disp}  {e.get('action', ''):6} "
           f"{LABELS.get(result, result):24} {handle:18} {e.get('url', '')}")
 PY
   exit 0
@@ -296,25 +320,25 @@ if [ "$MODE" = "repost" ]; then
       exit 1
     fi
 
-    _today="$(date +%F)"
+    _today="$(date +%d/%m/%Y)"
     echo
-    echo "Fechas (AAAA-MM-DD): escribe los 8 dígitos seguidos; los guiones se añaden solos."
+    echo "Fechas (DD/MM/AAAA): escribe los 8 dígitos seguidos; las barras se añaden solas."
     echo "Enter acepta el valor entre corchetes."
     while :; do
       if ! read_date "Fecha desde" "$_today"; then
         echo "Entrada cancelada." >&2
         exit 1
       fi
-      X_FROM="$READ_DATE"
+      X_FROM="$(to_iso "$READ_DATE")"
 
-      if ! read_date "Fecha hasta (Enter = la misma)" "$X_FROM"; then
+      if ! read_date "Fecha hasta (Enter = la misma)" "$READ_DATE"; then
         echo "Entrada cancelada." >&2
         exit 1
       fi
-      X_TO="$READ_DATE"
+      X_TO="$(to_iso "$READ_DATE")"
 
       if [[ "$X_FROM" > "$X_TO" ]]; then
-        echo "  La fecha inicial ($X_FROM) es posterior a la final ($X_TO). Inténtalo de nuevo."
+        echo "  La fecha inicial ($(to_dmy "$X_FROM")) es posterior a la final ($(to_dmy "$X_TO")). Inténtalo de nuevo."
         continue
       fi
       break
@@ -340,14 +364,16 @@ if [ "$MODE" = "repost" ]; then
     exit 1
   fi
 
-  for _date in "$X_FROM" "$X_TO"; do
-    if ! valid_date "$_date"; then
-      echo "Fecha no válida: '$_date'. Formato esperado: AAAA-MM-DD." >&2
+  for _var in X_FROM X_TO; do
+    _raw="${!_var}"
+    if ! _iso="$(to_iso "$_raw")"; then
+      echo "Fecha no válida: '$_raw'. Formato esperado: DD/MM/AAAA." >&2
       exit 1
     fi
+    printf -v "$_var" '%s' "$_iso"
   done
   if [[ "$X_FROM" > "$X_TO" ]]; then
-    echo "La fecha inicial ($X_FROM) es posterior a la final ($X_TO)." >&2
+    echo "La fecha inicial ($(to_dmy "$X_FROM")) es posterior a la final ($(to_dmy "$X_TO"))." >&2
     exit 1
   fi
 fi

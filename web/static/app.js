@@ -262,6 +262,54 @@ function todayISO() {
   return local.toISOString().slice(0, 10);
 }
 
+// --- fechas: la interfaz usa DD/MM/AAAA; la API y el motor trabajan en ISO ---
+
+function isoToDMY(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso || "");
+}
+
+// "28/10/2026" -> "2026-10-28". Devuelve "" si está incompleta o no existe.
+function dmyToISO(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length !== 8) return "";
+  const day = digits.slice(0, 2);
+  const month = digits.slice(2, 4);
+  const year = digits.slice(4, 8);
+  const probe = new Date(Number(year), Number(month) - 1, Number(day));
+  if (
+    probe.getFullYear() !== Number(year) ||
+    probe.getMonth() !== Number(month) - 1 ||
+    probe.getDate() !== Number(day)
+  ) {
+    return "";
+  }
+  return `${year}-${month}-${day}`;
+}
+
+// Marca de tiempo ISO -> DD/MM/YYYY HH:MM (para el historial).
+function fmtDateTime(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(String(value || ""));
+  if (!m) return String(value || "");
+  const [, year, month, day, hh, mm] = m;
+  return `${day}/${month}/${year}` + (hh ? ` ${hh}:${mm}` : "");
+}
+
+// Máscara DD/MM/AAAA: el usuario escribe 8 dígitos y las barras salen solas.
+function attachDateMask(input) {
+  input.addEventListener("input", () => {
+    const digits = input.value.replace(/\D/g, "").slice(0, 8);
+    let out = digits;
+    if (digits.length > 4) {
+      out = `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+    } else if (digits.length > 2) {
+      out = `${digits.slice(0, 2)}/${digits.slice(2)}`;
+    }
+    input.value = out;
+    input.setSelectionRange(out.length, out.length);
+  });
+}
+
 function toast(message, kind = "") {
   els.toast.textContent = message;
   els.toast.className = "toast " + kind;
@@ -306,8 +354,8 @@ function formParams() {
   const scope = (document.querySelector('input[name="scope"]:checked') || {}).value || "originals";
   return {
     users: els.users.value.trim(),
-    from: els.from.value,
-    to: els.to.value,
+    from: dmyToISO(els.from.value),
+    to: dmyToISO(els.to.value),
     scope,
     limit: Number(els.limit.value || 10),
     delay: Number(els.delay.value || 20),
@@ -318,7 +366,12 @@ function formParams() {
 
 function validateParams(params) {
   if (!params.users) throw new Error("Indica al menos una cuenta.");
-  if (!params.from || !params.to) throw new Error("Elige la fecha inicial y la final.");
+  if (!els.from.value.trim() || !els.to.value.trim()) {
+    throw new Error("Escribe la fecha inicial y la final (DD/MM/AAAA).");
+  }
+  if (!params.from || !params.to) {
+    throw new Error("Fecha no válida. Usa DD/MM/AAAA, por ejemplo 28/10/2026.");
+  }
   if (params.from > params.to) throw new Error("La fecha inicial no puede ser posterior a la final.");
   if (!(params.limit >= 1 && params.limit <= 50)) throw new Error("El máximo debe estar entre 1 y 50.");
   if (!(params.delay >= 5 && params.delay <= 300)) throw new Error("La pausa debe estar entre 5 y 300 segundos.");
@@ -521,7 +574,7 @@ function renderPosts(posts) {
 
     const date = document.createElement("td");
     date.className = "date";
-    date.textContent = post.fecha || "";
+    date.textContent = fmtDateTime(post.fecha);
 
     const author = document.createElement("td");
     author.className = "author";
@@ -712,7 +765,7 @@ function renderHistory(entries) {
 
     const when = document.createElement("td");
     when.className = "date";
-    when.textContent = (entry.ts || "").slice(0, 16).replace("T", " ");
+    when.textContent = fmtDateTime(entry.ts);
     when.title = entry.ts || "";
 
     const action = document.createElement("td");
@@ -778,18 +831,18 @@ async function loadHistory() {
 
 function init() {
   const today = todayISO();
-  els.from.value = today;
-  els.to.value = today;
-  els.to.min = today;
+  els.from.value = isoToDMY(today);
+  els.to.value = isoToDMY(today);
+  attachDateMask(els.from);
+  attachDateMask(els.to);
 
-  els.from.addEventListener("change", () => {
-    els.to.min = els.from.value;
-    if (els.to.value && els.from.value && els.to.value < els.from.value) {
-      els.to.value = els.from.value;
-    }
+  els.from.addEventListener("input", () => {
+    const from = dmyToISO(els.from.value);
+    const to = dmyToISO(els.to.value);
+    if (from && to && from > to) els.to.value = isoToDMY(from);
     invalidatePreview();
   });
-  els.to.addEventListener("change", invalidatePreview);
+  els.to.addEventListener("input", invalidatePreview);
   [els.users, els.limit, els.delay, els.match, els.exclude].forEach((input) => {
     input.addEventListener("input", invalidatePreview);
   });
