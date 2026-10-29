@@ -16,10 +16,14 @@
 #
 # Cuentas: el modo interactivo sugiere las cuentas usadas antes mientras se
 # escribe (↑/↓ elige, Tab completa, Enter acepta). Se guardan junto al historial.
+# Citas: --quote "#ETECSA" repostea con cita y ese comentario; cada palabra se
+# normaliza a hashtag y los usados quedan recordados para el panel web.
 #
 # Opciones:
 #   --csv RUTA          exportar el listado a CSV
 #   --md RUTA           exportar el listado a Markdown
+#   --quote "#tag"      repost con cita: publica ese comentario (admite varios
+#                       hashtags: --quote "#ETECSA #Cuba")
 #   --force             ignorar el historial (repostea aunque ya conste)
 #   --history [N]       ver los últimos N movimientos (20 por defecto)
 #   --undo-last [N]     deshacer la última tanda (o los últimos N reposts)
@@ -34,11 +38,14 @@
 #   X_SKIP_RETWEETS=0 incluir retweets (por defecto se ignoran)
 #   X_MATCH=a,b    solo posts que contengan alguna de esas palabras
 #   X_EXCLUDE=c,d  descartar posts que contengan alguna
+#   X_QUOTE="#tag" repost con cita y ese comentario (igual que --quote)
 #   X_ACCOUNTS=... archivo de cuentas recordadas (por defecto, junto al historial)
+#   X_HASHTAGS=... archivo de hashtags recordados (por defecto, junto al historial)
 #   BU_CDP_URL=... endpoint de Chrome (default http://127.0.0.1:9222)
 #
 # Historial: ~/.local/state/xrepost/history.jsonl (cambiable con X_HISTORY)
 # Cuentas:   ~/.local/state/xrepost/accounts.json  (cambiable con X_ACCOUNTS)
+# Hashtags:  ~/.local/state/xrepost/hashtags.json  (cambiable con X_HASHTAGS)
 
 set -euo pipefail
 
@@ -221,6 +228,7 @@ UNDO_N=""
 HISTORY_N=""
 CSV=""
 MD=""
+QUOTE="${X_QUOTE:-}"
 FORCE=0
 POS=()
 
@@ -234,6 +242,9 @@ while [ $# -gt 0 ]; do
     --md)
       [ $# -ge 2 ] || { echo "Falta la ruta de --md" >&2; exit 1; }
       MD="$2"; shift 2 ;;
+    --quote)
+      [ $# -ge 2 ] || { echo "Falta el texto de --quote" >&2; exit 1; }
+      QUOTE="$2"; shift 2 ;;
     --force)
       FORCE=1; shift ;;
     --history)
@@ -265,6 +276,8 @@ LABELS = {
     "no_button": "sin botón de repost", "no_menu": "menú no abierto",
     "unconfirmed": "no confirmado", "undone": "deshecho",
     "not_reposted": "no estaba reposteado", "undo_failed": "no se pudo deshacer",
+    "quoted": "citado con comentario", "no_quote_option": "menú sin cita",
+    "no_composer": "editor de cita no abierto", "quote_failed": "cita no publicada",
 }
 
 path, n = sys.argv[1], max(0, int(sys.argv[2] or 20))
@@ -376,6 +389,19 @@ if [ "$MODE" = "repost" ]; then
     echo "La fecha inicial ($(to_dmy "$X_FROM")) es posterior a la final ($(to_dmy "$X_TO"))." >&2
     exit 1
   fi
+
+  if [ -n "$QUOTE" ]; then
+    _clean="$(python3 "$SELF_DIR/xrepost_hashtags.py" clean "$QUOTE" 2>/dev/null || true)"
+    if [ -z "$_clean" ]; then
+      echo "El comentario de la cita debe contener al menos un hashtag, por ejemplo #ETECSA." >&2
+      exit 1
+    fi
+    if [ "${#_clean}" -gt 280 ]; then
+      echo "El comentario de la cita es demasiado largo (máximo 280 caracteres)." >&2
+      exit 1
+    fi
+    QUOTE="$_clean"
+  fi
 fi
 
 export X_APPLY="${X_APPLY:-0}"
@@ -385,14 +411,18 @@ export X_SKIP_REPLIES="${X_SKIP_REPLIES:-1}"
 export X_SKIP_RETWEETS="${X_SKIP_RETWEETS:-1}"
 export X_MATCH="${X_MATCH:-}"
 export X_EXCLUDE="${X_EXCLUDE:-}"
+export X_QUOTE="$QUOTE"
 export X_FORCE="$FORCE"
 export X_CSV="$CSV"
 export X_MD="$MD"
 export BU_CDP_URL="${BU_CDP_URL:-http://127.0.0.1:9222}"
 
-# Recordar las cuentas para las próximas sugerencias (CLI y panel web).
+# Recordar las cuentas y los hashtags para las próximas sugerencias (CLI y panel).
 if [ "$MODE" = "repost" ] && [ -n "${X_USERS:-}" ]; then
   python3 "$SELF_DIR/xrepost_accounts.py" add "$X_USERS" >/dev/null 2>&1 || true
+fi
+if [ "$MODE" = "repost" ] && [ -n "${X_QUOTE:-}" ]; then
+  python3 "$SELF_DIR/xrepost_hashtags.py" add "$X_QUOTE" >/dev/null 2>&1 || true
 fi
 
 if [ "$MODE" = "repost" ] && [ "$X_APPLY" != "1" ]; then

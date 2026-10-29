@@ -13,6 +13,8 @@ Variables de entorno (las pone xrepost.sh):
   X_SKIP_RETWEETS 1 = ignorar retweets (default 1)
   X_MATCH   palabras que debe contener el post, separadas por comas (opcional)
   X_EXCLUDE palabras que descartan el post, separadas por comas (opcional)
+  X_QUOTE   comentario del repost con cita; cada palabra se vuelve un hashtag
+            ("#ETECSA" o "ETECSA, cuba" -> "#ETECSA #cuba"). Vacío = repost
   X_FORCE   "1" = ignorar el historial y volver a procesar lo ya reposteado
   X_HISTORY ruta del historial JSONL
   X_CSV     exportar el listado a CSV
@@ -45,6 +47,7 @@ MATCH = [k.strip().lower() for k in os.environ.get("X_MATCH", "").split(",") if 
 EXCLUDE = [k.strip().lower() for k in os.environ.get("X_EXCLUDE", "").split(",") if k.strip()]
 CSV_PATH = os.environ.get("X_CSV", "")
 MD_PATH = os.environ.get("X_MD", "")
+QUOTE_TEXT = os.environ.get("X_QUOTE", "").strip()
 RUN_ID = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 HISTORY = os.environ.get("X_HISTORY") or os.path.join(
     os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
@@ -59,9 +62,13 @@ SEEN = set()  # URLs ya aceptadas; global para no duplicar entre usuarios
 # Códigos internos (historial) → texto que ve el usuario.
 LABELS = {
     "reposted": "reposteado",
+    "quoted": "citado con comentario",
     "already": "ya estaba reposteado",
     "no_button": "no encontré el botón de repost",
     "no_menu": "el menú no se abrió",
+    "no_quote_option": "el menú no ofrecía «Citar»",
+    "no_composer": "no se abrió el editor de la cita",
+    "quote_failed": "no se pudo publicar la cita",
     "unconfirmed": "no se pudo confirmar",
     "undone": "deshecho",
     "not_reposted": "no estaba reposteado",
@@ -135,6 +142,24 @@ HAS_CONFIRM = "!!document.querySelector('[data-testid=\"retweetConfirm\"]')"
 HAS_UNDO = "!!document.querySelector('[data-testid=\"unretweetConfirm\"]')"
 FIRST_RETWEET = "document.querySelector('[data-testid=\"retweet\"]')"
 FIRST_UNRETWEET = "document.querySelector('[data-testid=\"unretweet\"]')"
+
+# Menú de repost: la opción de cita es el enlace a /compose/post.
+QUOTE_MENU = "document.querySelector('a[role=\"menuitem\"][href*=\"/compose/post\"]')"
+HAS_QUOTE_MENU = "!!document.querySelector('a[role=\"menuitem\"][href*=\"/compose/post\"]')"
+HAS_QUOTE_COMPOSER = "!!document.querySelector('[data-testid=\"tweetButton\"]')"
+QUOTE_POST_DISABLED = (
+    "(function(){var b=document.querySelector('[data-testid=\"tweetButton\"]');"
+    "return !b||b.getAttribute('aria-disabled')==='true';})()"
+)
+# El editor de la cita es el textarea que vive junto al botón «Post» del modal.
+FOCUS_QUOTE_EDITOR = (
+    "(function(){var b=document.querySelector('[data-testid=\"tweetButton\"]');"
+    "if(!b)return false;var n=b;"
+    "for(var i=0;i<12&&n;i++){"
+    "var t=n.querySelector('[data-testid=\"tweetTextarea_0\"]');"
+    "if(t){t.focus();return true;}n=n.parentElement;}"
+    "return false;})()"
+)
 
 
 def now():
@@ -247,6 +272,8 @@ def save_event(action, result, post=None, entry=None):
         "handle": base.get("handle", ""),
         "posted_at": base.get("posted_at") or base.get("time", ""),
     }
+    if QUOTE_TEXT:
+        rec["quote"] = QUOTE_TEXT
     try:
         d = os.path.dirname(HISTORY)
         if d:
@@ -273,6 +300,10 @@ def history_state(entries):
                 reposted.add(e["id"])
                 ours.pop(e["id"], None)  # que la última acción quede al final
                 ours[e["id"]] = e
+            elif res == "quoted":
+                # Una cita no se deshace con «unretweet», pero sí cuenta como
+                # hecha: no se vuelve a citar el mismo post en otra ejecución.
+                reposted.add(e["id"])
             elif res == "already":
                 reposted.add(e["id"])
                 # si ya era nuestro, sigue siéndolo; si no, no lo reclamamos
@@ -356,6 +387,8 @@ def collect(user, d_from, d_to):
 
 
 def repost(url):
+    if QUOTE_TEXT:
+        return quote_repost(url, QUOTE_TEXT)
     goto_url(url)
     wait_for_load()
     time.sleep(1.5)
@@ -370,6 +403,49 @@ def repost(url):
     js("document.querySelector('[data-testid=\"retweetConfirm\"]').click()")
     time.sleep(2.5)
     return "reposted" if js(N_UNRETWEET) > 0 else "unconfirmed"
+
+
+def quote_repost(url, text):
+    """Repost con cita: abre «Quote», escribe el comentario y publica."""
+    goto_url(url)
+    wait_for_load()
+    time.sleep(1.5)
+
+    button = FIRST_RETWEET if js(N_RETWEET) > 0 else FIRST_UNRETWEET
+    if js(N_RETWEET) == 0 and js(N_UNRETWEET) == 0:
+        return "no_button"
+    js(button + ".click()")
+    time.sleep(1.3)
+    if not js(HAS_QUOTE_MENU):
+        return "no_quote_option"
+    js(QUOTE_MENU + ".click()")
+
+    for _ in range(15):
+        if js(HAS_QUOTE_COMPOSER):
+            break
+        time.sleep(1)
+    else:
+        return "no_composer"
+
+    if not js(FOCUS_QUOTE_EDITOR):
+        return "no_composer"
+    time.sleep(0.4)
+    type_text(text)
+    time.sleep(0.8)
+
+    for _ in range(10):
+        if not js(QUOTE_POST_DISABLED):
+            break
+        time.sleep(0.5)
+    else:
+        return "quote_failed"
+
+    js("document.querySelector('[data-testid=\"tweetButton\"]').click()")
+    for _ in range(24):
+        time.sleep(0.5)
+        if not js(HAS_QUOTE_COMPOSER):
+            return "quoted"
+    return "quote_failed"
 
 
 def undo_one(url):
@@ -492,6 +568,8 @@ def main():
             f"sobre {len(found)} publicaciones revisadas | límite={LIMIT} | delay={DELAY}s"
         )
         print("origen: listado de la previsualización (no se vuelve a buscar en X)")
+        if QUOTE_TEXT:
+            print(f"comentario de la cita: {QUOTE_TEXT}")
         if not found:
             print("\nNo hay publicaciones seleccionadas.")
             do_export([])
@@ -504,6 +582,8 @@ def main():
             + " | respuestas: "
             + ("omitidas" if SKIP_REPLIES else "incluidas")
         )
+        if QUOTE_TEXT:
+            print(f"comentario de la cita: {QUOTE_TEXT}")
         if MATCH or EXCLUDE:
             print(f"filtros de texto: incluir={MATCH or '—'} | excluir={EXCLUDE or '—'}")
 
@@ -546,7 +626,10 @@ def main():
         print("\nDRY-RUN: no se ha reposteado nada. Usa X_APPLY=1 para ejecutar.")
         return 0
 
-    print(f"\nReposteando (máx {LIMIT})...\n")
+    if QUOTE_TEXT:
+        print(f"\nCitando con «{QUOTE_TEXT}» (máx {LIMIT})...\n")
+    else:
+        print(f"\nReposteando (máx {LIMIT})...\n")
     done = 0
     for p in found:
         if done >= LIMIT:
@@ -556,11 +639,11 @@ def main():
         statuses[p["url"]] = res
         print(f"  {label(res)}: {p['url']}")
         save_event("repost", res, post=p)
-        if res == "reposted":
+        if res in ("reposted", "quoted"):
             done += 1
             time.sleep(DELAY)
     do_export(found, statuses, default_status="no procesado")
-    print(f"\nTotal reposteado: {done}")
+    print(f"\nTotal {'citado' if QUOTE_TEXT else 'reposteado'}: {done}")
     return 0
 
 

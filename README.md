@@ -33,7 +33,7 @@ Hace cuatro cosas:
 
 1. **Busca** los posts de una lista de usuarios en un rango de fechas, usando la búsqueda nativa de X (`from:`, `since:`, `until:`).
 2. **Filtra** por fecha real, descarta respuestas y —según el alcance elegido— los retweets de otras cuentas, elimina duplicados, aplica filtros de palabras (`X_MATCH` / `X_EXCLUDE`) y muestra un listado con autor, fecha, texto y enlace; opcionalmente lo exporta a CSV o Markdown.
-3. **Repostea** (opcional) cada uno de esos posts, con límite y pausas, verificando que el repost se hizo de verdad.
+3. **Repostea** (opcional) cada uno de esos posts, con límite y pausas, verificando que el repost se hizo de verdad. Con `--quote` (o el campo del panel) publica en su lugar un **repost con cita** y un comentario de hashtags común a toda la tanda.
 4. **Registra y deshace**: guarda cada repost en un historial para no repetirlo en ejecuciones futuras y permite revertirlo con `--undo-last` o `--undo`.
 
 Por defecto **no repostea nada**: primero enseña la lista (modo *dry-run*). Solo actúa si se lo pides explícitamente con `X_APPLY=1`.
@@ -47,15 +47,17 @@ Por defecto **no repostea nada**: primero enseña la lista (modo *dry-run*). Sol
 ├── xrepost.sh                 # interfaz: pregunta usuarios/fechas o recibe argumentos
 ├── xrepost.py                 # lógica: búsqueda, filtrado, repost y verificación
 ├── xrepost_accounts.py        # cuentas recordadas, ranking y prompt con sugerencias
+├── xrepost_hashtags.py        # hashtags recordados, ranking y normalización de la cita
 ├── README.md                  # este documento (texto, se actualiza primero)
-└── xrepost-documentacion.pdf  # este mismo documento en PDF (14 páginas)
+└── xrepost-documentacion.pdf  # este mismo documento en PDF (16 páginas)
 ```
 
 - **`xrepost.sh`** es un envoltorio Bash. Recoge los datos, los pasa como variables de entorno y ejecuta `browser-use < xrepost.py`.
 - **`xrepost.py`** se ejecuta *dentro* del harness. No importa `browser-use`: las funciones (`goto_url`, `js`, `wait_for_load`, …) ya están disponibles en el entorno de ejecución.
 - **`xrepost_accounts.py`** guarda las cuentas usadas, calcula las coincidencias y dibuja el autocompletado del modo interactivo. El panel web usa el mismo archivo.
+- **`xrepost_hashtags.py`** hace lo mismo con los hashtags del comentario de una cita: normaliza el texto, guarda los usados y calcula las sugerencias del panel.
 
-El historial y los estados no viven en la carpeta, sino en `~/.local/state/xrepost/history.jsonl` (una línea JSON por acción). Se puede cambiar con `X_HISTORY`; los `--csv` / `--md` se guardan donde indiques. Las cuentas recordadas se guardan en `~/.local/state/xrepost/accounts.json` (cambiable con `X_ACCOUNTS`).
+El historial y los estados no viven en la carpeta, sino en `~/.local/state/xrepost/history.jsonl` (una línea JSON por acción). Se puede cambiar con `X_HISTORY`; los `--csv` / `--md` se guardan donde indiques. Las cuentas recordadas se guardan en `~/.local/state/xrepost/accounts.json` (cambiable con `X_ACCOUNTS`) y los hashtags en `~/.local/state/xrepost/hashtags.json` (cambiable con `X_HASHTAGS`).
 
 ---
 
@@ -116,7 +118,7 @@ cd ~/Downloads/x-repost && ./xrepost.sh
 
 - Decidir *qué* posts merecen repost ("solo los de Kubernetes, no las ofertas de empleo").
 - Resumir el timeline antes de aprobar.
-- Redactar un comentario para un quote-repost.
+- Redactar un comentario libre para un quote-repost: la herramienta solo convierte en hashtags lo que escribas (por ejemplo `ETECSA, cuba` → `#ETECSA #cuba`).
 - Sustituir el script por un agente que se adapte si X cambia el HTML.
 
 Nada de eso es necesario para la función actual: usuarios + fecha → lista → repost verificado.
@@ -214,6 +216,8 @@ Si `X_SKIP_RETWEETS` ya está definida en el entorno, no se pregunta: se respeta
 | `X_SKIP_RETWEETS=0 ./xrepost.sh a 27/10/2026` | Incluye también los retweets de otras cuentas |
 | `X_APPLY=1 ./xrepost.sh kubernetesio 27/10/2026` | Repostea de verdad |
 | `X_APPLY=1 X_LIMIT=3 X_DELAY=45 ./xrepost.sh a 27/10/2026` | Máximo 3, con 45 s entre cada uno |
+| `X_APPLY=1 ./xrepost.sh --quote "#ETECSA" a 27/10/2026` | Repost con cita y el comentario `#ETECSA` |
+| `./xrepost.sh --quote "ETECSA, cuba" a 27/10/2026` | Dry-run de citas; normaliza a `#ETECSA #cuba` |
 
 Las fechas por argumentos se escriben **DD/MM/AAAA** (también se acepta `AAAA-MM-DD` por compatibilidad). Si solo se pasa una, se usa como día único.
 
@@ -276,9 +280,11 @@ Solo deshace reposts **hechos por la herramienta** (no los que ya estaban antes)
 | `X_SKIP_RETWEETS` | `1` | `1` = solo publicaciones originales (omite los retweets de otras cuentas) · `0` = incluye esos retweets. En modo interactivo se pregunta, salvo que la variable ya esté definida |
 | `X_MATCH` | — | Palabras separadas por comas; el post debe contener **alguna** (sin distinguir mayúsculas) |
 | `X_EXCLUDE` | — | Palabras separadas por comas; si el post contiene **alguna**, se descarta |
+| `X_QUOTE` | — | Comentario del repost con cita. Cada palabra se normaliza a hashtag (`ETECSA, cuba` → `#ETECSA #cuba`). Vacío = repost normal |
 | `X_FORCE` | `0` | `1` = ignorar el historial y volver a procesar lo ya reposteado |
 | `X_HISTORY` | `~/.local/state/xrepost/history.jsonl` | Ruta del historial JSONL |
 | `X_ACCOUNTS` | junto al historial (`.../accounts.json`) | Ruta de las cuentas recordadas para el autocompletado |
+| `X_HASHTAGS` | junto al historial (`.../hashtags.json`) | Ruta de los hashtags recordados para el autocompletado de la cita |
 | `X_CSV` / `X_MD` | — | Exportación; normalmente se usan los flags `--csv` / `--md` |
 | `BU_CDP_URL` | `http://127.0.0.1:9222` | Endpoint de Chrome |
 
@@ -301,7 +307,7 @@ Solo deshace reposts **hechos por la herramienta** (no los que ya estaban antes)
 
 ### 7.2 Recorrido de una ejecución
 
-**Paso 1 — el wrapper recoge los datos.** `xrepost.sh` interpreta los flags (`--csv`, `--md`, `--force`, `--undo-last`, …), toma usuarios y fechas de los argumentos (o de `X_USERS`/`X_FROM`, o los pregunta) y los exporta como variables de entorno. En modo interactivo delega la entrada de usuarios en `xrepost_accounts.py`, que lee las cuentas recordadas y el historial, dibuja las coincidencias mientras se escribe y devuelve la lista elegida. En modo interactivo, la fecha es un campo enmascarado DD/MM/AAAA que inserta las barras y valida el calendario (por dentro se normaliza a ISO); después se pregunta el alcance (solo originales o también retweets) y la respuesta se traduce a `X_SKIP_RETWEETS`. Las fechas recibidas por argumentos o variables también se validan antes de navegar. Después ejecuta:
+**Paso 1 — el wrapper recoge los datos.** `xrepost.sh` interpreta los flags (`--csv`, `--md`, `--force`, `--undo-last`, …), toma usuarios y fechas de los argumentos (o de `X_USERS`/`X_FROM`, o los pregunta) y los exporta como variables de entorno. En modo interactivo delega la entrada de usuarios en `xrepost_accounts.py`, que lee las cuentas recordadas y el historial, dibuja las coincidencias mientras se escribe y devuelve la lista elegida. Si se pasa `--quote` (o `X_QUOTE`), el wrapper normaliza el comentario con `xrepost_hashtags.py` (cada palabra se vuelve un hashtag, sin duplicados) y lo guarda para las sugerencias del panel. En modo interactivo, la fecha es un campo enmascarado DD/MM/AAAA que inserta las barras y valida el calendario (por dentro se normaliza a ISO); después se pregunta el alcance (solo originales o también retweets) y la respuesta se traduce a `X_SKIP_RETWEETS`. Las fechas recibidas por argumentos o variables también se validan antes de navegar. Después ejecuta:
 
 ```bash
 exec browser-use < xrepost.py
@@ -383,6 +389,10 @@ Cada post recibe uno de estos estados:
 | `no encontré el botón de repost` | El post no cargó o no es reposteable (p. ej. borrado o protegido) |
 | `el menú no se abrió` | El clic no desplegó el menú de repost |
 | `no se pudo confirmar` | Se hizo clic pero no apareció `unretweet` (posible fallo de red o límite de X) |
+| `citado con comentario` | Repost con cita publicado y verificado (el modal se cerró) |
+| `el menú no ofrecía «Citar»` | El menú de repost no mostró la opción de cita |
+| `no se abrió el editor de la cita` | No apareció el compositor con el post citado |
+| `no se pudo publicar la cita` | El botón «Post» siguió deshabilitado o el modal no se cerró |
 
 Al deshacer (`--undo-last` / `--undo`):
 
@@ -483,6 +493,9 @@ Todo lo siguiente se probó con la cuenta real, dejándola sin cambios (donde se
 17. **Autocompletado de cuentas** (entrada simulada con PTY): se sembraron cuentas, se escribió un prefijo, se eligió con `↓`/`Enter`, se completó con `Tab`, se encadenaron dos cuentas y se canceló con `Ctrl-C`; el valor devuelto fue el esperado y `accounts.json` se actualizó. Las pruebas de ranking cubren coincidencia exacta, prefijo, subcadena, recencia, frecuencia y exclusión de cuentas ya usadas en el mismo campo.
 17. **Validación sin interacción**: `./xrepost.sh u1 40/13/2026` termina con «Fecha no válida» y código 1, sin abrir Chrome.
 18. **Resumen de alcance**: la cabecera de cada ejecución muestra `alcance: solo publicaciones originales | respuestas: omitidas` (o la variante elegida).
+19. **Repost con cita (previsualización real desde el panel)**: con `--quote "#ETECSA"` y el rango 27–28/10/2026, la ejecución mostró `comentario de la cita: #ETECSA`, devolvió los 2 posts con fechas DD/MM/AAAA y no publicó nada (dry-run).
+20. **Autocompletado de hashtags (panel real)**: el campo bajo «Cuentas» sugirió los hashtags usados, excluyó los ya escritos en el mismo campo, aceptó la elección con `↓`/`Enter` y añadió el espacio para el siguiente; `ETECSA, cuba` se normalizó a `#ETECSA #cuba` y un comentario sin hashtags válidos se rechazó con aviso.
+21. **Pruebas automáticas**: 23 pruebas del panel (incluye `/api/hashtags`, validación de la cita y `X_QUOTE` en el entorno del motor), 7 de hashtags y 6 de cuentas.
 
 Capturas de esas pruebas: `~/Downloads/demo-5-x-home.png`, `~/Downloads/demo-6-repost-test.png`.
 

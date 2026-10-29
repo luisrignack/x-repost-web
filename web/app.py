@@ -44,6 +44,7 @@ DEFAULT_RUNS = WEB_DIR / ".runs"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import xrepost_accounts  # noqa: E402  (depende del sys.path anterior)
+import xrepost_hashtags  # noqa: E402
 
 MAX_BODY = 1_000_000
 MAX_LOG = 2_000
@@ -128,6 +129,8 @@ def validate_repost_params(data: dict, *, apply: bool) -> dict:
     scope = str(data.get("scope", "originals"))
     match = str(data.get("match", "")).strip()
     exclude = str(data.get("exclude", "")).strip()
+    raw_quote = str(data.get("quote", "")).strip()
+    quote = xrepost_hashtags.clean_text(raw_quote)
 
     if not users:
         raise HttpError(400, "Indica al menos una cuenta.")
@@ -149,6 +152,13 @@ def validate_repost_params(data: dict, *, apply: bool) -> dict:
         raise HttpError(400, "Alcance no válido.")
     if len(match) > 200 or len(exclude) > 200:
         raise HttpError(400, "Los filtros de texto son demasiado largos.")
+    if raw_quote and not quote:
+        raise HttpError(400, "El comentario debe ser un hashtag, por ejemplo #ETECSA.")
+    if len(quote) > xrepost_hashtags.MAX_TEXT:
+        raise HttpError(
+            400,
+            f"El comentario es demasiado largo (máximo {xrepost_hashtags.MAX_TEXT} caracteres).",
+        )
 
     try:
         limit = int(data.get("limit", 10))
@@ -175,6 +185,7 @@ def validate_repost_params(data: dict, *, apply: bool) -> dict:
         "scope": scope,
         "match": match,
         "exclude": exclude,
+        "quote": quote,
         "limit": limit,
         "delay": delay,
     }
@@ -189,6 +200,7 @@ def params_key(params: dict) -> str:
             "scope": params["scope"],
             "match": params["match"],
             "exclude": params["exclude"],
+            "quote": params["quote"],
         },
         sort_keys=True,
     )
@@ -305,6 +317,7 @@ class App:
         runs: Path,
         token: str,
         accounts: Path | None = None,
+        hashtags: Path | None = None,
         verbose: bool = False,
     ):
         self.engine = Path(engine).expanduser().resolve()
@@ -312,6 +325,7 @@ class App:
         self.runs = Path(runs).expanduser()
         self.runs.mkdir(parents=True, exist_ok=True)
         self.accounts, _ = xrepost_accounts.resolve_paths(accounts, self.history)
+        self.hashtags = xrepost_hashtags.resolve_path(hashtags, self.history)
         self.token = token
         self.verbose = verbose
         self.jobs: dict[str, Job] = {}
@@ -336,6 +350,29 @@ class App:
         """Recuerda las cuentas usadas para el autocompletado (sin romper la búsqueda)."""
         try:
             xrepost_accounts.add_accounts(users, self.accounts)
+        except OSError:
+            pass
+
+    def suggest_hashtags(
+        self,
+        query: str = "",
+        exclude: set[str] | list[str] | tuple[str, ...] = (),
+        limit: int = 8,
+    ) -> list[dict]:
+        return xrepost_hashtags.suggest(
+            query,
+            hashtags=self.hashtags,
+            history=self.history,
+            limit=max(1, min(int(limit), 20)),
+            exclude=exclude,
+        )
+
+    def record_hashtags(self, quote: str) -> None:
+        """Recuerda los hashtags del comentario para el autocompletado."""
+        if not quote:
+            return
+        try:
+            xrepost_hashtags.add_hashtags(quote, self.hashtags)
         except OSError:
             pass
 
@@ -406,6 +443,7 @@ class App:
             {
                 "X_HISTORY": str(self.history),
                 "X_ACCOUNTS": str(self.accounts),
+                "X_HASHTAGS": str(self.hashtags),
                 "X_MODE": "repost",
                 "X_FORCE": "0",
                 "PYTHONUNBUFFERED": "1",
@@ -430,6 +468,7 @@ class App:
                 "X_DELAY": str(p["delay"]),
                 "X_MATCH": p["match"],
                 "X_EXCLUDE": p["exclude"],
+                "X_QUOTE": p.get("quote", ""),
                 "X_CSV": str(job.csv_path),
                 "X_MD": str(job.md_path),
             }
@@ -767,6 +806,21 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
             limit = max(1, min(limit, 200))
             return self._send_json({"entries": read_history(self.application.history, limit)})
 
+        if path == "/api/hashtags":
+            query = parse_qs(urlparse(self.path).query)
+            text = (query.get("q") or [""])[0].strip()
+            try:
+                limit = int((query.get("limit") or ["8"])[0])
+            except ValueError:
+                limit = 8
+            exclude = (query.get("exclude") or [""])[0]
+            items = self.application.suggest_hashtags(
+                text,
+                exclude=xrepost_hashtags.split_tags(exclude),
+                limit=limit,
+            )
+            return self._send_json({"hashtags": items})
+
         if path == "/api/accounts":
             query = parse_qs(urlparse(self.path).query)
             text = (query.get("q") or [""])[0].strip()
@@ -813,6 +867,7 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
         # Las cuentas quedan recordadas en cuanto se usan en una búsqueda,
         # igual que en el CLI.
         self.application.record_accounts(params["users"])
+        self.application.record_hashtags(params["quote"])
         job = self.application.start_job("preview", params)
         self._send_json({"id": job.id}, 202)
 
@@ -938,6 +993,11 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("X_ACCOUNTS", ""),
         help="Ruta de las cuentas recordadas (por defecto, junto al historial).",
     )
+    parser.add_argument(
+        "--hashtags",
+        default=os.environ.get("X_HASHTAGS", ""),
+        help="Ruta de los hashtags recordados (por defecto, junto al historial).",
+    )
     parser.add_argument("--runs", default=str(DEFAULT_RUNS), help="Carpeta de ejecuciones y exportaciones.")
     parser.add_argument("--no-open", action="store_true", help="No abrir el navegador automáticamente.")
     parser.add_argument("--verbose", action="store_true", help="Registrar cada petición HTTP.")
@@ -957,6 +1017,7 @@ def main(argv: list[str] | None = None) -> int:
         history=Path(args.history),
         runs=Path(args.runs),
         accounts=Path(args.accounts) if args.accounts else None,
+        hashtags=Path(args.hashtags) if args.hashtags else None,
         token=token,
         verbose=args.verbose,
     )
@@ -982,6 +1043,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Motor:     {app.engine}")
     print(f"  Historial: {app.history}")
     print(f"  Cuentas:   {app.accounts}")
+    print(f"  Hashtags:  {app.hashtags}")
     print("  Solo escucha en 127.0.0.1. Ctrl-C para detener.")
     print()
 

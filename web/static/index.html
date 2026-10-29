@@ -46,6 +46,18 @@
           <small id="users-help">Separadas por coma. La @ es opcional; las cuentas usadas antes se sugieren al escribir.</small>
         </div>
 
+        <div class="field">
+          <label class="field-label" for="quote">Hashtag de la cita (opcional)</label>
+          <div class="combo" id="quote-combo">
+            <input id="quote" name="quote" type="text" placeholder="#ETECSA"
+                   spellcheck="false" autocapitalize="off" autocomplete="off"
+                   role="combobox" aria-autocomplete="list" aria-expanded="false"
+                   aria-controls="quote-list" aria-describedby="quote-help">
+            <ul id="quote-list" class="combo-list" role="listbox" aria-label="Hashtags usados antes" hidden></ul>
+          </div>
+          <small id="quote-help">Si lo escribes, cada repost se publica como cita con ese comentario. Separa varios hashtags con comas o espacios; los usados antes se sugieren al escribir.</small>
+        </div>
+
         <div class="grid2">
           <div class="field">
             <label class="field-label" for="from">Desde</label>

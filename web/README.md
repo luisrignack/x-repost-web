@@ -48,6 +48,7 @@ carpeta de ejecuciones:
 python3 web/app.py --engine ./xrepost.sh \
   --history ~/.local/state/xrepost/history.jsonl \
   --accounts ~/.local/state/xrepost/accounts.json \
+  --hashtags ~/.local/state/xrepost/hashtags.json \
   --runs ./web/.runs
 ```
 
@@ -68,6 +69,24 @@ de `X_ACCOUNTS` / `--accounts`), junto al historial. El panel registra la cuenta
 en cuanto se previsualiza una búsqueda y reutiliza el mismo archivo que el CLI.
 Al arrancar, el servidor lo indica en la línea `Cuentas:`.
 
+## Repost con cita y autocompletado de hashtags
+
+El campo **Hashtag de la cita**, justo debajo de «Cuentas», es opcional. Si
+escribes algo, cada repost de esa tanda se publica como **cita** con ese
+comentario; si lo dejas vacío, el repost es normal. Cada palabra se convierte en
+hashtag y se quitan los duplicados: `ETECSA, cuba` se envía como
+`#ETECSA #cuba`. Un texto que no produzca ningún hashtag se rechaza con aviso.
+
+Igual que las cuentas, los hashtags usados se recuerdan y se sugieren al
+escribir (mismo teclado: `↑`/`↓`, `Enter`, `Tab`, `Esc`). El panel registra los
+hashtags al previsualizar y el CLI al ejecutar con `--quote`; el archivo es
+`~/.local/state/xrepost/hashtags.json` (o `X_HASHTAGS` / `--hashtags`). Al
+arrancar, el servidor lo indica en la línea `Hashtags:`.
+
+Una cita cuenta como acción hecha: no se repite en ejecuciones posteriores,
+pero `--undo` no intenta deshacerla (X no ofrece «quitar cita» como sí ofrece
+«quitar repost»).
+
 ## Flujo
 
 Las fechas del panel se escriben en formato **DD/MM/AAAA** (las barras se
@@ -82,8 +101,9 @@ vuelta en DD/MM/YYYY.
 
 1. **Previsualizar**: busca publicaciones con el mismo motor del CLI. No toca la
    cuenta; genera un listado y archivos CSV/Markdown descargables.
-2. **Repostear**: solo se habilita tras una previsualización completada. Pide
-   confirmación explícita en un diálogo y exige una pausa mínima de 5 s.
+2. **Repostear o citar**: solo se habilita tras una previsualización completada.
+   Pide confirmación explícita en un diálogo (que incluye el comentario de la
+   cita) y exige una pausa mínima de 5 s.
 3. **Historial**: muestra el último estado de cada publicación (reposteado,
    deshecho, etc.) y permite deshacer un repost concreto.
 4. **Deshacer última tanda**: revierte los reposts que hizo la herramienta en la
@@ -123,9 +143,10 @@ python3 -m unittest -v
 ```
 
 Comprueban autenticación, comprobaciones de `Host`/`Origin`, validación de
-fechas y parámetros, previsualización, exportaciones, confirmación, lista exacta
-aplicada, historial, deshacer, bloqueo de una sola ejecución, cancelación y
-sugerencias de cuentas (registro al previsualizar, ranking y exclusión).
+fechas y parámetros (incluido el comentario de la cita), previsualización,
+exportaciones, confirmación, lista exacta aplicada, historial, deshacer, bloqueo
+de una sola ejecución, cancelación, sugerencias de cuentas y de hashtags
+(registro al previsualizar, ranking y exclusión) y que `X_QUOTE` llega al motor.
 
 ## Límites actuales
 
@@ -137,6 +158,8 @@ sugerencias de cuentas (registro al previsualizar, ranking y exclusión).
 - El panel no sustituye al CLI: lo invoca como subproceso. Los valores por
   defecto siguen siendo conservadores (dry-run salvo confirmación, retweets y
   respuestas omitidos).
+- La cita se publica con el comentario de hashtags indicado; no admite texto
+  libre ni imágenes.
 
 ## Mantener la rama al día
 

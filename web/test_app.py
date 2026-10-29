@@ -74,6 +74,13 @@ STUB = textwrap.dedent(
             w.writerows(rows)
 
     def main():
+        dump = os.environ.get("STUB_ENV_DUMP", "")
+        if dump:
+            with open(dump, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {k: os.environ.get(k, "") for k in ("X_QUOTE", "X_HASHTAGS", "X_APPLY")},
+                    fh,
+                )
         if os.environ.get("STUB_FAIL") == "1":
             print("fallo simulado del motor")
             return 3
@@ -385,6 +392,9 @@ class WebTest(unittest.TestCase):
             {"limit": 51},
             {"delay": -1},
             {"match": "x" * 201},
+            {"quote": "!!!"},
+            {"quote": "#"},
+            {"quote": " ".join(chr(ord("a") + i) * 50 for i in range(6))},
         ]
         for case in cases:
             with self.subTest(case=case):
@@ -422,6 +432,44 @@ class WebTest(unittest.TestCase):
 
         status, _, data = self.json_request("GET", "/api/accounts?q=otra")
         self.assertEqual([item["handle"] for item in data["accounts"]], ["otra_cuenta"])
+
+    def test_hashtags_endpoint_requires_token_and_suggests_used(self):
+        status, _, _ = self.request("GET", "/api/hashtags?q=ete", token=False)
+        self.assertEqual(status, 401)
+
+        self.app.record_hashtags("#ETECSA #Cuba, etecsa")
+        self.assertTrue(self.app.hashtags.exists())
+        self.assertEqual(self.app.hashtags.parent, self.history.parent)
+
+        status, _, data = self.json_request("GET", "/api/hashtags?q=ete")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["tag"] for item in data["hashtags"]], ["ETECSA"])
+
+        status, _, data = self.json_request("GET", "/api/hashtags?q=c&exclude=ETECSA")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["tag"] for item in data["hashtags"]], ["Cuba"])
+
+        status, _, data = self.json_request("GET", "/api/hashtags?limit=1")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["hashtags"]), 1)
+
+    def test_preview_records_hashtags_for_autocomplete(self):
+        job = self.preview(quote="ETECSA, cuba")
+        self.assertEqual(job["params"]["quote"], "#ETECSA #cuba")
+
+        status, _, data = self.json_request("GET", "/api/hashtags?q=cub")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["tag"] for item in data["hashtags"]], ["cuba"])
+
+    def test_preview_passes_quote_to_engine(self):
+        dump = self.root / "env.json"
+        self.set_env("STUB_ENV_DUMP", str(dump))
+        job = self.preview(quote="#ETECSA")
+        self.assertEqual(job["status"], "done")
+        env = json.loads(dump.read_text(encoding="utf-8"))
+        self.assertEqual(env["X_QUOTE"], "#ETECSA")
+        self.assertEqual(env["X_HASHTAGS"], str(self.app.hashtags))
+        self.assertEqual(env["X_APPLY"], "0")
 
     def test_unknown_job_and_export(self):
         status, _, _ = self.request("GET", "/api/jobs/deadbeef")

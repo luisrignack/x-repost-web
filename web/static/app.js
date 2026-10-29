@@ -8,6 +8,9 @@ const els = {
   users: $("#users"),
   usersCombo: $("#users-combo"),
   usersList: $("#users-list"),
+  quote: $("#quote"),
+  quoteCombo: $("#quote-combo"),
+  quoteList: $("#quote-list"),
   from: $("#from"),
   to: $("#to"),
   limit: $("#limit"),
@@ -65,41 +68,11 @@ const state = {
 
 let toastTimer = null;
 
-// --- autocompletado de cuentas ---------------------------------------------
+// --- autocompletado (cuentas y hashtags) -----------------------------------
 
-const combo = {
-  items: [],
-  active: -1,
-  open: false,
-  timer: null,
-  controller: null,
-  seq: 0,
-};
-
-function currentToken(input) {
-  const value = input.value;
-  const caret = input.selectionStart ?? value.length;
-  const before = value.slice(0, caret);
-  const start = before.lastIndexOf(",") + 1;
-  let end = value.indexOf(",", caret);
-  if (end === -1) end = value.length;
-  const query = value.slice(start, end).trim().replace(/^@/, "");
-  return { start, end, query, caret };
-}
-
-function comboUsed(value, start) {
-  const out = [];
-  let offset = 0;
-  for (const part of value.split(",")) {
-    const handle = part.trim().replace(/^@/, "");
-    if (offset !== start && /^[A-Za-z0-9_]{1,15}$/.test(handle)) {
-      out.push(handle);
-    }
-    offset += part.length + 1;
-  }
-  return out;
-}
-
+// Los campos con sugerencias (Cuentas y Hashtag de la cita) comparten la misma
+// mecánica: se busca el token bajo el cursor, se piden coincidencias a la API y
+// se elige con teclado o ratón.
 function appendHighlighted(element, text, query) {
   const needle = (query || "").toLowerCase();
   const index = needle ? text.toLowerCase().indexOf(needle) : -1;
@@ -113,147 +86,277 @@ function appendHighlighted(element, text, query) {
   element.append(mark, text.slice(index + needle.length));
 }
 
-function setComboActive(index) {
-  const options = Array.from(els.usersList.querySelectorAll(".combo-option"));
-  if (!options.length) {
-    combo.active = -1;
-    els.users.removeAttribute("aria-activedescendant");
-    return;
-  }
-  const next = Math.max(0, Math.min(index, options.length - 1));
-  combo.active = next;
-  options.forEach((option, position) => {
-    option.setAttribute("aria-selected", position === next ? "true" : "false");
-  });
-  const current = options[next];
-  els.users.setAttribute("aria-activedescendant", current.id);
-  current.scrollIntoView({ block: "nearest" });
-}
+function createCombo(config) {
+  const { input, list, wrap } = config;
+  const prefixRe = new RegExp("^" + config.prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const state = {
+    items: [],
+    active: -1,
+    open: false,
+    timer: null,
+    controller: null,
+    seq: 0,
+  };
 
-function hideCombo() {
-  combo.open = false;
-  combo.active = -1;
-  combo.items = [];
-  combo.seq += 1;
-  clearTimeout(combo.timer);
-  combo.timer = null;
-  if (combo.controller) combo.controller.abort();
-  combo.controller = null;
-  els.usersList.replaceChildren();
-  els.usersList.hidden = true;
-  els.users.setAttribute("aria-expanded", "false");
-  els.users.removeAttribute("aria-activedescendant");
-}
-
-function renderCombo(items, query) {
-  const list = els.usersList;
-  list.replaceChildren();
-  combo.items = items;
-  combo.active = -1;
-
-  if (!items.length) {
-    if (query) {
-      const empty = document.createElement("li");
-      empty.className = "combo-empty";
-      empty.textContent = "Sin cuentas usadas que coincidan.";
-      list.append(empty);
-      combo.open = true;
-      list.hidden = false;
-      els.users.setAttribute("aria-expanded", "true");
-    } else {
-      hideCombo();
+  function tokenBounds(value, caret) {
+    let start = 0;
+    for (let index = caret - 1; index >= 0; index -= 1) {
+      if (config.separator.test(value[index])) {
+        start = index + 1;
+        break;
+      }
     }
-    return;
+    let end = value.length;
+    for (let index = caret; index < value.length; index += 1) {
+      if (config.separator.test(value[index])) {
+        end = index;
+        break;
+      }
+    }
+    return { start, end };
   }
 
-  const fragment = document.createDocumentFragment();
-  items.forEach((item, index) => {
-    const option = document.createElement("li");
-    option.className = "combo-option";
-    option.id = `users-option-${index}`;
-    option.setAttribute("role", "option");
-    option.setAttribute("aria-selected", "false");
-    option.dataset.handle = item.handle;
+  function currentToken() {
+    const value = input.value;
+    const caret = input.selectionStart ?? value.length;
+    const { start, end } = tokenBounds(value, caret);
+    const raw = value.slice(start, end);
+    const lead = (raw.match(/^\s*/) || [""])[0];
+    const query = raw.trim().replace(prefixRe, "");
+    return { start, end, query, caret, lead, raw };
+  }
 
-    const name = document.createElement("strong");
-    appendHighlighted(name, "@" + item.handle, query);
-    option.append(name);
-
-    const uses = Number(item.count || 0);
-    if (uses > 1) {
-      const meta = document.createElement("small");
-      meta.textContent = `${uses} usos`;
-      option.append(meta);
+  function usedTokens(token) {
+    const out = [];
+    const seen = new Set();
+    for (const part of input.value.split(config.split)) {
+      const item = part.trim().replace(prefixRe, "");
+      if (!config.tokenRe.test(item)) continue;
+      const key = item.toLowerCase();
+      if (key === token.query.toLowerCase() || seen.has(key)) continue;
+      seen.add(key);
+      out.push(item);
     }
+    return out;
+  }
 
-    option.addEventListener("mousedown", (event) => event.preventDefault());
-    option.addEventListener("mouseenter", () => setComboActive(index));
-    option.addEventListener("click", () => chooseCombo(index));
-    fragment.append(option);
-  });
-
-  list.append(fragment);
-  combo.open = true;
-  list.hidden = false;
-  els.users.setAttribute("aria-expanded", "true");
-}
-
-async function fetchCombo() {
-  if (document.activeElement !== els.users) return;
-  const token = currentToken(els.users);
-  const exclude = comboUsed(els.users.value, token.start);
-  const params = new URLSearchParams({ q: token.query, limit: "8" });
-  if (exclude.length) params.set("exclude", exclude.join(","));
-
-  if (combo.controller) combo.controller.abort();
-  combo.controller = new AbortController();
-  const seq = ++combo.seq;
-  try {
-    const response = await fetch(`/api/accounts?${params}`, {
-      signal: combo.controller.signal,
-      headers: { Accept: "application/json" },
-    });
-    if (seq !== combo.seq) return;
-    if (!response.ok) {
-      hideCombo();
+  function setActive(index) {
+    const options = Array.from(list.querySelectorAll(".combo-option"));
+    if (!options.length) {
+      state.active = -1;
+      input.removeAttribute("aria-activedescendant");
       return;
     }
-    const data = await response.json();
-    if (seq !== combo.seq) return;
-    renderCombo(data.accounts || [], token.query);
-  } catch (error) {
-    if (error.name !== "AbortError" && seq === combo.seq) hideCombo();
+    const next = Math.max(0, Math.min(index, options.length - 1));
+    state.active = next;
+    options.forEach((option, position) => {
+      option.setAttribute("aria-selected", position === next ? "true" : "false");
+    });
+    const current = options[next];
+    input.setAttribute("aria-activedescendant", current.id);
+    current.scrollIntoView({ block: "nearest" });
   }
+
+  function hide() {
+    state.open = false;
+    state.active = -1;
+    state.items = [];
+    state.seq += 1;
+    clearTimeout(state.timer);
+    state.timer = null;
+    if (state.controller) state.controller.abort();
+    state.controller = null;
+    list.replaceChildren();
+    list.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+  }
+
+  function render(items, query) {
+    list.replaceChildren();
+    state.items = items;
+    state.active = -1;
+
+    if (!items.length) {
+      if (query) {
+        const empty = document.createElement("li");
+        empty.className = "combo-empty";
+        empty.textContent = config.emptyText;
+        list.append(empty);
+        state.open = true;
+        list.hidden = false;
+        input.setAttribute("aria-expanded", "true");
+      } else {
+        hide();
+      }
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    items.forEach((item, index) => {
+      const value = String(item[config.itemKey] || "");
+      const option = document.createElement("li");
+      option.className = "combo-option";
+      option.id = `${config.optionPrefix}-${index}`;
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", "false");
+      option.dataset.value = value;
+
+      const name = document.createElement("strong");
+      appendHighlighted(name, config.prefix + value, query);
+      option.append(name);
+
+      const uses = Number(item.count || 0);
+      if (uses > 1) {
+        const meta = document.createElement("small");
+        meta.textContent = `${uses} usos`;
+        option.append(meta);
+      }
+
+      option.addEventListener("mousedown", (event) => event.preventDefault());
+      option.addEventListener("mouseenter", () => setActive(index));
+      option.addEventListener("click", () => choose(index));
+      fragment.append(option);
+    });
+
+    list.append(fragment);
+    state.open = true;
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  }
+
+  async function fetchItems() {
+    if (document.activeElement !== input) return;
+    const token = currentToken();
+    const exclude = usedTokens(token);
+    const params = new URLSearchParams({ q: token.query, limit: "8" });
+    if (exclude.length) params.set("exclude", exclude.join(","));
+
+    if (state.controller) state.controller.abort();
+    state.controller = new AbortController();
+    const seq = ++state.seq;
+    try {
+      const response = await fetch(`${config.endpoint}?${params}`, {
+        signal: state.controller.signal,
+        headers: { Accept: "application/json" },
+      });
+      if (seq !== state.seq) return;
+      if (!response.ok) {
+        hide();
+        return;
+      }
+      const data = await response.json();
+      if (seq !== state.seq) return;
+      render(data[config.responseKey] || [], token.query);
+    } catch (error) {
+      if (error.name !== "AbortError" && seq === state.seq) hide();
+    }
+  }
+
+  function schedule(immediate = false) {
+    clearTimeout(state.timer);
+    if (immediate) {
+      fetchItems();
+      return;
+    }
+    state.timer = setTimeout(fetchItems, 120);
+  }
+
+  function choose(index) {
+    const item = state.items[index];
+    if (!item) return;
+    const value = String(item[config.itemKey] || "");
+    const token = currentToken();
+    const suffix = input.value.slice(token.end);
+    let replacement = token.lead + config.prefix + value;
+    let caret = token.start + replacement.length;
+    if (!config.joinerCheck.test(suffix)) {
+      replacement += config.joiner;
+      caret += config.joiner.length;
+    }
+    input.value = input.value.slice(0, token.start) + replacement + suffix;
+    input.setSelectionRange(caret, caret);
+    hide();
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    schedule(true);
+  }
+
+  function onKeydown(event) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      if (!state.open) {
+        fetchItems().then(() => {
+          if (state.open && state.items.length) {
+            setActive(delta > 0 ? 0 : state.items.length - 1);
+          }
+        });
+        return;
+      }
+      const total = state.items.length;
+      if (!total) return;
+      if (state.active < 0) {
+        setActive(delta > 0 ? 0 : total - 1);
+      } else {
+        setActive((state.active + delta + total) % total);
+      }
+    } else if (event.key === "Enter" && state.open && state.active >= 0) {
+      event.preventDefault();
+      choose(state.active);
+    } else if (event.key === "Tab" && !event.shiftKey && state.open && state.active >= 0) {
+      event.preventDefault();
+      choose(state.active);
+    } else if (event.key === "Escape" && state.open) {
+      event.preventDefault();
+      hide();
+    }
+  }
+
+  input.addEventListener("input", () => schedule());
+  input.addEventListener("focus", () => schedule(true));
+  input.addEventListener("blur", () => setTimeout(hide, 120));
+  input.addEventListener("keydown", onKeydown);
+
+  return { hide, schedule, fetchItems, choose, setActive, state, wrap };
 }
 
-function scheduleCombo(immediate = false) {
-  clearTimeout(combo.timer);
-  if (immediate) {
-    fetchCombo();
-    return;
-  }
-  combo.timer = setTimeout(fetchCombo, 120);
-}
+const usersCombo = createCombo({
+  input: els.users,
+  list: els.usersList,
+  wrap: els.usersCombo,
+  endpoint: "/api/accounts",
+  responseKey: "accounts",
+  itemKey: "handle",
+  prefix: "@",
+  separator: /,/,
+  split: ",",
+  tokenRe: /^[A-Za-z0-9_]{1,15}$/,
+  joiner: ", ",
+  joinerCheck: /^,/,
+  emptyText: "Sin cuentas usadas que coincidan.",
+  optionPrefix: "users-option",
+});
 
-function chooseCombo(index) {
-  const item = combo.items[index];
-  if (!item) return;
-  const value = els.users.value;
-  const token = currentToken(els.users);
-  const raw = value.slice(token.start, token.end);
-  const lead = (raw.match(/^\s*/) || [""])[0];
-  const suffix = value.slice(token.end);
-  let replacement = lead + "@" + item.handle;
-  let caret = token.start + replacement.length;
-  if (!suffix.startsWith(",")) {
-    replacement += ", ";
-    caret += 2;
-  }
-  els.users.value = value.slice(0, token.start) + replacement + suffix;
-  els.users.setSelectionRange(caret, caret);
-  hideCombo();
-  els.users.dispatchEvent(new Event("input", { bubbles: true }));
-  scheduleCombo(true);
+const quoteCombo = createCombo({
+  input: els.quote,
+  list: els.quoteList,
+  wrap: els.quoteCombo,
+  endpoint: "/api/hashtags",
+  responseKey: "hashtags",
+  itemKey: "tag",
+  prefix: "#",
+  separator: /[\s,]/,
+  split: /[\s,]+/,
+  tokenRe: /^[^\s#,]{1,50}$/,
+  joiner: " ",
+  joinerCheck: /^[\s,]/,
+  emptyText: "Sin hashtags usados que coincidan.",
+  optionPrefix: "quote-option",
+});
+
+function hideCombos() {
+  usersCombo.hide();
+  quoteCombo.hide();
 }
 
 function todayISO() {
@@ -288,6 +391,27 @@ function dmyToISO(value) {
     return "";
   }
   return `${year}-${month}-${day}`;
+}
+
+// --- comentario de la cita: cada palabra se convierte en hashtag ------------
+
+const MAX_QUOTE = 280;
+const TAG_RE = /^[^\s#,]{1,50}$/;
+const ALNUM_RE = /[\p{L}\p{N}]/u;
+
+// "ETECSA, cuba" -> "#ETECSA #cuba" (igual que xrepost_hashtags.clean_text).
+function normalizeQuote(value) {
+  const seen = new Set();
+  const tags = [];
+  for (const part of String(value || "").split(/[\s,]+/)) {
+    const tag = part.trim().replace(/^#+/, "");
+    if (!TAG_RE.test(tag) || !ALNUM_RE.test(tag)) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags.map((tag) => "#" + tag).join(" ");
 }
 
 // Motivo por el que una fecha DD/MM/AAAA no sirve ("" si es correcta).
@@ -428,6 +552,7 @@ function formParams() {
     delay: Number(els.delay.value || 20),
     match: els.match.value.trim(),
     exclude: els.exclude.value.trim(),
+    quote: els.quote.value.trim(),
   };
 }
 
@@ -440,6 +565,14 @@ function validateParams(params) {
   if (params.from > params.to) throw new Error("La fecha inicial no puede ser posterior a la final.");
   if (!(params.limit >= 1 && params.limit <= 50)) throw new Error("El máximo debe estar entre 1 y 50.");
   if (!(params.delay >= 5 && params.delay <= 300)) throw new Error("La pausa debe estar entre 5 y 300 segundos.");
+  const quote = normalizeQuote(params.quote);
+  if (params.quote && !quote) {
+    throw new Error("El comentario debe ser un hashtag, por ejemplo #ETECSA.");
+  }
+  if (quote.length > MAX_QUOTE) {
+    throw new Error(`El comentario es demasiado largo (máximo ${MAX_QUOTE} caracteres).`);
+  }
+  params.quote = quote;
 }
 
 function invalidatePreview() {
@@ -517,8 +650,15 @@ function watchJob(id, onDone, onFail) {
 
     if (job.status === "done") {
       if (job.kind === "apply") {
-        const done = (job.posts || []).filter((post) => post.estado === "reposteado").length;
-        toast(done ? `${done} repost(s) completados.` : "Ejecución terminada sin reposts nuevos.", "ok");
+        const okPosts = (job.posts || []).filter((post) => /^(reposteado|citado)/i.test(post.estado || ""));
+        const quoted = okPosts.some((post) => /^citado/i.test(post.estado || ""));
+        const kind = quoted ? "cita(s)" : "repost(s)";
+        toast(
+          okPosts.length
+            ? `${okPosts.length} ${kind} completados.`
+            : "Ejecución terminada sin reposts nuevos.",
+          "ok",
+        );
       } else if (job.kind === "undo") {
         toast("Deshacer completado.", "ok");
       } else {
@@ -543,7 +683,7 @@ function watchJob(id, onDone, onFail) {
 
 async function runPreview(event) {
   event.preventDefault();
-  hideCombo();
+  hideCombos();
   if (state.busy) return;
 
   let params;
@@ -579,7 +719,9 @@ async function runPreview(event) {
         els.exports.hidden = false;
         els.exportCsv.href = `/api/jobs/${job.id}/export/csv`;
         els.exportMd.href = `/api/jobs/${job.id}/export/md`;
-        els.applyNote.textContent = `Se repostearán como máximo ${params.limit} de estas ${job.posts.length} publicaciones revisadas, exactamente las del listado.`;
+        els.applyNote.textContent = params.quote
+          ? `Se publicarán como máximo ${params.limit} citas de estas ${job.posts.length} publicaciones revisadas, con el comentario «${params.quote}», exactamente las del listado.`
+          : `Se repostearán como máximo ${params.limit} de estas ${job.posts.length} publicaciones revisadas, exactamente las del listado.`;
         els.resultFoot.hidden = false;
         syncButtons();
       } else {
@@ -616,11 +758,12 @@ function summaryText(posts, params) {
     .map(([user, count]) => `${count} de ${user}`)
     .join(" · ");
   const scope = params.scope === "all" ? "con retweets" : "solo originales";
-  return `${posts.length} publicación(es) · ${detail} · ${isoToDMY(params.from)} → ${isoToDMY(params.to)} · ${scope}`;
+  const quote = params.quote ? ` · cita ${params.quote}` : "";
+  return `${posts.length} publicación(es) · ${detail} · ${isoToDMY(params.from)} → ${isoToDMY(params.to)} · ${scope}${quote}`;
 }
 
 function statusClass(text) {
-  if (/^(reposteado|deshecho)$/i.test(text)) return "ok";
+  if (/^(reposteado|deshecho)$/i.test(text) || /^citado/i.test(text)) return "ok";
   if (/^(ya estaba|no |sin )/i.test(text)) return "bad";
   return "info";
 }
@@ -684,6 +827,7 @@ function openConfirm() {
   const rows = [
     ["Cuentas", params.users],
     ["Fechas", `${isoToDMY(params.from)} → ${isoToDMY(params.to)}`],
+    ["Cita", params.quote || "Sin cita (repost normal)"],
     ["Alcance", params.scope === "all" ? "Originales y retweets de otras cuentas" : "Solo publicaciones originales"],
     ["Máximo", `${params.limit} publicaciones`],
     ["Pausa", `${params.delay} s entre reposts`],
@@ -917,44 +1061,12 @@ function init() {
     invalidatePreview();
   });
   els.to.addEventListener("input", invalidatePreview);
-  [els.users, els.limit, els.delay, els.match, els.exclude].forEach((input) => {
+  [els.users, els.quote, els.limit, els.delay, els.match, els.exclude].forEach((input) => {
     input.addEventListener("input", invalidatePreview);
   });
-  els.users.addEventListener("input", () => scheduleCombo());
-  els.users.addEventListener("focus", () => scheduleCombo(true));
-  els.users.addEventListener("blur", () => setTimeout(hideCombo, 120));
-  els.users.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      const delta = event.key === "ArrowDown" ? 1 : -1;
-      if (!combo.open) {
-        fetchCombo().then(() => {
-          if (combo.open && combo.items.length) {
-            setComboActive(delta > 0 ? 0 : combo.items.length - 1);
-          }
-        });
-        return;
-      }
-      const total = combo.items.length;
-      if (!total) return;
-      if (combo.active < 0) {
-        setComboActive(delta > 0 ? 0 : total - 1);
-      } else {
-        setComboActive((combo.active + delta + total) % total);
-      }
-    } else if (event.key === "Enter" && combo.open && combo.active >= 0) {
-      event.preventDefault();
-      chooseCombo(combo.active);
-    } else if (event.key === "Tab" && !event.shiftKey && combo.open && combo.active >= 0) {
-      event.preventDefault();
-      chooseCombo(combo.active);
-    } else if (event.key === "Escape" && combo.open) {
-      event.preventDefault();
-      hideCombo();
-    }
-  });
   document.addEventListener("pointerdown", (event) => {
-    if (!els.usersCombo.contains(event.target)) hideCombo();
+    if (!els.usersCombo.contains(event.target)) usersCombo.hide();
+    if (!els.quoteCombo.contains(event.target)) quoteCombo.hide();
   });
   $$('input[name="scope"]').forEach((radio) => {
     radio.addEventListener("change", invalidatePreview);
