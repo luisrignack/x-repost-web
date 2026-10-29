@@ -268,14 +268,27 @@ input:focus-visible {
 
 .date-native {
   position: absolute;
-  right: 8px;
-  bottom: 0;
-  width: 1px;
-  height: 1px;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 34px;
   padding: 0;
   border: 0;
   opacity: 0;
-  pointer-events: none;
+  cursor: pointer;
+  z-index: 2;
+}
+
+/* El indicador nativo ocupa todo el botón: un clic abre el calendario. */
+.date-native::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
 }
 
 .date-field input.invalid {
