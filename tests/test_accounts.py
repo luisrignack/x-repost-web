@@ -89,6 +89,33 @@ class AccountsTest(unittest.TestCase):
         self.assertEqual(data["accounts"][0]["count"], 2)
         self.assertEqual(len(data["accounts"]), 1)
 
+    def test_clear_accounts_ignores_old_history_and_keeps_new(self):
+        self.history.write_text(
+            json.dumps({"ts": "2020-01-01T00:00:00Z", "action": "repost", "search_user": "Vieja"}) + "\n",
+            encoding="utf-8",
+        )
+        accounts.add_accounts("Otra", self.accounts)
+        self.assertEqual(len(accounts.suggest("", self.accounts, self.history)), 2)
+
+        self.assertTrue(accounts.clear_accounts(self.accounts, self.history))
+        self.assertEqual(accounts.suggest("", self.accounts, self.history), [])
+        self.assertEqual(accounts.load_accounts(self.accounts, self.history), {})
+
+        # Lo usado después del borrado sí vuelve a sugerirse.
+        accounts.add_accounts("Despues", self.accounts)
+        self.assertEqual(
+            [item["handle"] for item in accounts.suggest("des", self.accounts, self.history)],
+            ["Despues"],
+        )
+        with self.history.open("a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps({"ts": "2099-01-01T00:00:00Z", "action": "repost", "search_user": "Futura"}) + "\n"
+            )
+        self.assertEqual(
+            [item["handle"] for item in accounts.suggest("fut", self.accounts, self.history)],
+            ["Futura"],
+        )
+
     def test_replace_token_preserves_separators(self):
         self.assertEqual(
             accounts._replace_token("@ana, @lu", "luis"),

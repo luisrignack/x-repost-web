@@ -219,6 +219,41 @@ def add_hashtags(
         lock.close()
 
 
+def clear_hashtags(
+    hashtags: str | Path | None = None,
+    history: str | Path | None = None,
+) -> bool:
+    """Borra los hashtags recordados. Devuelve False si no se pudo."""
+    path = resolve_path(hashtags, history)
+    lock_path = path.with_name(path.name + ".lock")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = open(lock_path, "a+", encoding="utf-8")
+    except OSError:
+        return False
+
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+
+        _write_file(path, {})
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
+        lock.close()
+
+
 def rank_hashtags(
     query: str,
     entries: dict[str, dict],

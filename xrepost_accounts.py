@@ -124,7 +124,7 @@ def _read_file(path: Path) -> dict[str, dict]:
     return entries
 
 
-def _merge_history(entries: dict[str, dict], history: Path) -> None:
+def _merge_history(entries: dict[str, dict], history: Path, since: float = 0.0) -> None:
     counts: dict[str, int] = {}
     try:
         with open(history, encoding="utf-8") as fh:
@@ -141,10 +141,14 @@ def _merge_history(entries: dict[str, dict], history: Path) -> None:
                 handle = normalize_handle(item.get("search_user"))
                 if not HANDLE_RE.fullmatch(handle):
                     continue
+                ts = str(item.get("ts") or "")
+                # Tras borrar el historial, los eventos anteriores no vuelven a
+                # alimentar las sugerencias.
+                if since and _parse_ts(ts) <= since:
+                    continue
                 key = handle.lower()
                 counts[key] = counts.get(key, 0) + 1
                 current = entries.get(key)
-                ts = str(item.get("ts") or "")
                 if current is None:
                     entries[key] = {"handle": handle, "count": 1, "last_used": ts}
                 else:
@@ -158,17 +162,28 @@ def _merge_history(entries: dict[str, dict], history: Path) -> None:
         return
 
 
+def _read_cleared(path: Path) -> str:
+    """Marca ISO del último borrado de historial ("" si nunca se borró)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("cleared_at") or "")
+
+
 def load_accounts(
     accounts: str | Path | None = None,
     history: str | Path | None = None,
 ) -> dict[str, dict]:
     acc_path, hist_path = resolve_paths(accounts, history)
     entries = _read_file(acc_path)
-    _merge_history(entries, hist_path)
+    _merge_history(entries, hist_path, since=_parse_ts(_read_cleared(acc_path)))
     return entries
 
 
-def _write_file(path: Path, entries: dict[str, dict]) -> None:
+def _write_file(path: Path, entries: dict[str, dict], cleared_at: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ordered = sorted(
         entries.values(),
@@ -186,6 +201,8 @@ def _write_file(path: Path, entries: dict[str, dict]) -> None:
             for item in ordered
         ],
     }
+    if cleared_at:
+        payload["cleared_at"] = cleared_at
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     try:
@@ -220,6 +237,7 @@ def add_accounts(
             pass
 
         entries = _read_file(acc_path)
+        cleared_at = _read_cleared(acc_path)
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for handle in handles:
             key = handle.lower()
@@ -230,7 +248,43 @@ def add_accounts(
                 current["handle"] = handle
                 current["count"] = int(current.get("count") or 1) + 1
                 current["last_used"] = now
-        _write_file(acc_path, entries)
+        _write_file(acc_path, entries, cleared_at=cleared_at)
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
+        lock.close()
+
+
+def clear_accounts(
+    accounts: str | Path | None = None,
+    history: str | Path | None = None,
+) -> bool:
+    """Borra las cuentas recordadas y evita que el historial viejo las reponga."""
+    acc_path, _ = resolve_paths(accounts, history)
+    lock_path = acc_path.with_name(acc_path.name + ".lock")
+    try:
+        acc_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = open(lock_path, "a+", encoding="utf-8")
+    except OSError:
+        return False
+
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _write_file(acc_path, {}, cleared_at=now)
         return True
     except OSError:
         return False

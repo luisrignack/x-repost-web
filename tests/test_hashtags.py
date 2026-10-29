@@ -99,6 +99,21 @@ class HashtagsTest(unittest.TestCase):
         data = json.loads(self.store.read_text(encoding="utf-8"))
         self.assertEqual([item["tag"] for item in data["hashtags"]], ["ok"])
 
+    def test_clear_hashtags_removes_suggestions(self):
+        hashtags.add_hashtags("#ETECSA #Cuba", self.store)
+        self.assertEqual(len(hashtags.suggest("", self.store, self.history)), 2)
+
+        self.assertTrue(hashtags.clear_hashtags(self.store, self.history))
+        self.assertEqual(hashtags.suggest("", self.store, self.history), [])
+        self.assertEqual(hashtags.load_hashtags(self.store, self.history), {})
+
+        # Un hashtag usado después del borrado vuelve a aparecer.
+        hashtags.add_hashtags("#Nuevo", self.store)
+        self.assertEqual(
+            [item["tag"] for item in hashtags.suggest("nue", self.store, self.history)],
+            ["Nuevo"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

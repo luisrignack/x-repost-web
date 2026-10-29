@@ -67,7 +67,11 @@ pueden elegir con el ratón o con el teclado:
 Las cuentas se guardan en `~/.local/state/xrepost/accounts.json` (o en la ruta
 de `X_ACCOUNTS` / `--accounts`), junto al historial. El panel registra la cuenta
 en cuanto se previsualiza una búsqueda y reutiliza el mismo archivo que el CLI.
-Al arrancar, el servidor lo indica en la línea `Cuentas:`.
+Al arrancar, el servidor lo indica en la línea `Cuentas:`. La **papelera** a la
+derecha del campo borra el historial de cuentas guardadas (con confirmación):
+las sugerencias quedan vacías y las cuentas solo vuelven a aparecer cuando se
+usan de nuevo. El borrado también descarta los eventos anteriores del historial
+JSONL que alimentaban el autocompletado.
 
 ## Repost con cita y autocompletado de hashtags
 
@@ -81,7 +85,10 @@ Igual que las cuentas, los hashtags usados se recuerdan y se sugieren al
 escribir (mismo teclado: `↑`/`↓`, `Enter`, `Tab`, `Esc`). El panel registra los
 hashtags al previsualizar y el CLI al ejecutar con `--quote`; el archivo es
 `~/.local/state/xrepost/hashtags.json` (o `X_HASHTAGS` / `--hashtags`). Al
-arrancar, el servidor lo indica en la línea `Hashtags:`.
+arrancar, el servidor lo indica en la línea `Hashtags:`. La **papelera** a la
+derecha del campo borra el historial de hashtags guardados (con confirmación):
+las sugerencias quedan vacías y un hashtag solo reaparece cuando se vuelve a
+usar en una cita.
 
 Una cita cuenta como acción hecha: no se repite en ejecuciones posteriores,
 pero `--undo` no intenta deshacerla (X no ofrece «quitar cita» como sí ofrece

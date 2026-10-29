@@ -189,6 +189,30 @@ input:focus-visible {
 }
 
 .combo { position: relative; }
+.combo input[type="text"] { padding-right: 42px; }
+
+/* Papelera de los campos con historial (cuentas y hashtags). */
+.combo-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.combo-clear:hover { color: var(--danger); background: var(--danger-soft); border-color: var(--line); }
+.combo-clear:focus-visible { outline: 2px solid var(--danger); outline-offset: 1px; }
 
 .combo-list {
   position: absolute;

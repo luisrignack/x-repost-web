@@ -57,6 +57,8 @@ Por defecto **no repostea nada**: primero enseña la lista (modo *dry-run*). Sol
 - **`xrepost_accounts.py`** guarda las cuentas usadas, calcula las coincidencias y dibuja el autocompletado del modo interactivo. El panel web usa el mismo archivo.
 - **`xrepost_hashtags.py`** hace lo mismo con los hashtags del comentario de una cita: normaliza el texto, guarda los usados y calcula las sugerencias del panel.
 
+En el panel, la **papelera** a la derecha de «Cuentas» y de «Hashtag de la cita» borra el historial guardado de cada campo, con confirmación previa. Las sugerencias quedan vacías y solo se vuelven a llenar cuando se usan cuentas o hashtags de nuevo.
+
 El historial y los estados no viven en la carpeta, sino en `~/.local/state/xrepost/history.jsonl` (una línea JSON por acción). Se puede cambiar con `X_HISTORY`; los `--csv` / `--md` se guardan donde indiques. Las cuentas recordadas se guardan en `~/.local/state/xrepost/accounts.json` (cambiable con `X_ACCOUNTS`) y los hashtags en `~/.local/state/xrepost/hashtags.json` (cambiable con `X_HASHTAGS`).
 
 ---
@@ -189,7 +191,7 @@ Alcance de las publicaciones
   → Alcance: publicaciones originales y retweets de otras cuentas.
 ```
 
-Al escribir una cuenta, el campo muestra un desplegable con las cuentas usadas antes que coinciden con lo tecleado. Las coincidencias se ordenan por tipo (exacta, empieza por, contiene), luego por uso reciente y frecuencia. `↑`/`↓` mueve la selección, `Tab` completa el token y añade una coma para la siguiente cuenta, `Enter` acepta lo escrito o la sugerencia seleccionada, y `Esc` cierra el desplegable. Las cuentas se recuerdan al ejecutar la búsqueda, también cuando se pasan como argumentos.
+Al escribir una cuenta, el campo muestra un desplegable con las cuentas usadas antes que coinciden con lo tecleado. Las coincidencias se ordenan por tipo (exacta, empieza por, contiene), luego por uso reciente y frecuencia. `↑`/`↓` mueve la selección, `Tab` completa el token y añade una coma para la siguiente cuenta, `Enter` acepta lo escrito o la sugerencia seleccionada, y `Esc` cierra el desplegable. Las cuentas se recuerdan al ejecutar la búsqueda, también cuando se pasan como argumentos. La **papelera** a la derecha del campo borra el historial de cuentas guardadas (pide confirmación); las cuentas anteriores dejan de sugerirse y solo vuelven a aparecer cuando se usan otra vez. El borrado también ignora los eventos anteriores del historial JSONL que alimentaban el autocompletado.
 
 Las fechas se escriben en un campo enmascarado con avance automático en formato **DD/MM/AAAA**: al teclear `20102026` se ve `20/10/2026`, las barras se insertan solas y no hace falta pulsar Enter. El campo rechaza mientras se escribe lo imposible (día `90`, mes `13`…), autorrellena `9` como `09` y al octavo dígito valida el calendario: `30/02/2026` se marca y se vuelve a pedir; lo mismo con años fuera de 2006–2100. `Enter` sobre un campo vacío toma el valor entre corchetes (hoy para «desde», la fecha inicial para «hasta»). Si la fecha inicial queda después de la final, se vuelven a pedir ambas.
 
@@ -497,7 +499,7 @@ Todo lo siguiente se probó con la cuenta real, dejándola sin cambios (donde se
 18. **Resumen de alcance**: la cabecera de cada ejecución muestra `alcance: solo publicaciones originales | respuestas: omitidas` (o la variante elegida).
 19. **Repost con cita (cuenta real)**: se publicó una cita del post de `@Docker` sobre Docker Sandboxes (28/10/2026) con el comentario `#Docker` desde `@rignack_X`; la ejecución terminó con `citado con comentario`, el historial guardó `quoted` y la cita se verificó en el perfil. Antes, el dry-run con `--quote "#ETECSA"` mostró `comentario de la cita: #ETECSA`, devolvió los 2 posts con fechas DD/MM/AAAA y no publicó nada.
 20. **Autocompletado de hashtags (panel real)**: el campo bajo «Cuentas» sugirió los hashtags usados, excluyó los ya escritos en el mismo campo, aceptó la elección con `↓`/`Enter` y añadió el espacio para el siguiente; `ETECSA, cuba` se normalizó a `#ETECSA #cuba` y un comentario sin hashtags válidos se rechazó con aviso.
-21. **Pruebas automáticas**: 23 pruebas del panel (incluye `/api/hashtags`, validación de la cita y `X_QUOTE` en el entorno del motor), 7 de hashtags y 6 de cuentas.
+21. **Pruebas automáticas**: 22 pruebas del panel (incluye `/api/hashtags`, `/api/accounts/clear`, `/api/hashtags/clear`, validación de la cita y `X_QUOTE` en el entorno del motor), 8 de hashtags y 7 de cuentas.
 
 Capturas de esas pruebas: `~/Downloads/demo-5-x-home.png`, `~/Downloads/demo-6-repost-test.png`.
 

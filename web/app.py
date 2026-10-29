@@ -376,6 +376,20 @@ class App:
         except OSError:
             pass
 
+    def clear_accounts(self) -> bool:
+        """Borra las cuentas recordadas (el historial viejo ya no las sugiere)."""
+        try:
+            return xrepost_accounts.clear_accounts(self.accounts, self.history)
+        except OSError:
+            return False
+
+    def clear_hashtags(self) -> bool:
+        """Borra los hashtags recordados para las citas."""
+        try:
+            return xrepost_hashtags.clear_hashtags(self.hashtags, self.history)
+        except OSError:
+            return False
+
     def start_job(self, kind: str, params: dict) -> Job:
         with self.lock:
             if self.current is not None and self.current.status == "running":
@@ -734,6 +748,10 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
                 return self._api_undo(data)
             if path == "/api/cancel":
                 return self._api_cancel()
+            if path == "/api/accounts/clear":
+                return self._api_clear_accounts()
+            if path == "/api/hashtags/clear":
+                return self._api_clear_hashtags()
             raise HttpError(404, "Ruta no encontrada.")
         except HttpError as exc:
             self._send_json({"error": exc.message}, exc.status)
@@ -919,6 +937,16 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
     def _api_cancel(self) -> None:
         cancelled = self.application.cancel()
         self._send_json({"ok": True, "cancelled": cancelled})
+
+    def _api_clear_accounts(self) -> None:
+        if not self.application.clear_accounts():
+            raise HttpError(500, "No se pudo borrar el historial de cuentas.")
+        self._send_json({"ok": True})
+
+    def _api_clear_hashtags(self) -> None:
+        if not self.application.clear_hashtags():
+            raise HttpError(500, "No se pudo borrar el historial de hashtags.")
+        self._send_json({"ok": True})
 
 
 def make_handler(app: App):

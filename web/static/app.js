@@ -8,9 +8,11 @@ const els = {
   users: $("#users"),
   usersCombo: $("#users-combo"),
   usersList: $("#users-list"),
+  usersClear: $("#users-clear"),
   quote: $("#quote"),
   quoteCombo: $("#quote-combo"),
   quoteList: $("#quote-list"),
+  quoteClear: $("#quote-clear"),
   from: $("#from"),
   to: $("#to"),
   limit: $("#limit"),
@@ -357,6 +359,27 @@ const quoteCombo = createCombo({
 function hideCombos() {
   usersCombo.hide();
   quoteCombo.hide();
+}
+
+// Borra el historial guardado de uno de los dos campos con sugerencias.
+async function clearHistory(kind) {
+  const isAccounts = kind === "accounts";
+  const question = isAccounts
+    ? "¿Borrar el historial de cuentas guardadas? Dejarán de aparecer en las sugerencias."
+    : "¿Borrar el historial de hashtags guardados? Dejarán de aparecer en las sugerencias.";
+  if (!window.confirm(question)) return;
+
+  const endpoint = isAccounts ? "/api/accounts/clear" : "/api/hashtags/clear";
+  const combo = isAccounts ? usersCombo : quoteCombo;
+  const input = isAccounts ? els.users : els.quote;
+  try {
+    await api(endpoint, { method: "POST", body: {} });
+    combo.hide();
+    if (document.activeElement === input) combo.schedule(true);
+    toast(isAccounts ? "Historial de cuentas borrado." : "Historial de hashtags borrado.", "ok");
+  } catch (error) {
+    toast(error.message, "bad");
+  }
 }
 
 function todayISO() {
@@ -1083,6 +1106,8 @@ function init() {
   els.undoLast.addEventListener("click", () => openUndo({ mode: "last" }));
   els.undoConfirm.addEventListener("click", doUndo);
   els.refreshHistory.addEventListener("click", loadHistory);
+  els.usersClear.addEventListener("click", () => clearHistory("accounts"));
+  els.quoteClear.addEventListener("click", () => clearHistory("hashtags"));
   els.historyBody.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-undo]");
     if (button) openUndo({ mode: "url", url: button.dataset.undo });

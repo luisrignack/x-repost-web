@@ -453,6 +453,52 @@ class WebTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(data["hashtags"]), 1)
 
+    def test_clear_accounts_requires_token_and_ignores_history(self):
+        status, _, _ = self.request("POST", "/api/accounts/clear", {}, token=False)
+        self.assertEqual(status, 401)
+
+        self.history.write_text(
+            json.dumps({"ts": "2020-01-01T00:00:00Z", "action": "repost", "search_user": "Vieja"}) + "\n",
+            encoding="utf-8",
+        )
+        self.app.record_accounts("@Otra")
+        status, _, data = self.json_request("GET", "/api/accounts?q=")
+        self.assertEqual(status, 200)
+        self.assertEqual({item["handle"] for item in data["accounts"]}, {"Vieja", "Otra"})
+
+        status, _, data = self.json_request("POST", "/api/accounts/clear", {})
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+
+        status, _, data = self.json_request("GET", "/api/accounts?q=")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["accounts"], [])
+
+        # Lo usado después del borrado vuelve a sugerirse; lo viejo no.
+        self.app.record_accounts("@Nueva")
+        status, _, data = self.json_request("GET", "/api/accounts?q=")
+        self.assertEqual([item["handle"] for item in data["accounts"]], ["Nueva"])
+
+    def test_clear_hashtags_requires_token_and_removes_suggestions(self):
+        status, _, _ = self.request("POST", "/api/hashtags/clear", {}, token=False)
+        self.assertEqual(status, 401)
+
+        self.app.record_hashtags("#ETECSA #Cuba")
+        status, _, data = self.json_request("GET", "/api/hashtags?q=")
+        self.assertEqual({item["tag"] for item in data["hashtags"]}, {"ETECSA", "Cuba"})
+
+        status, _, data = self.json_request("POST", "/api/hashtags/clear", {})
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+
+        status, _, data = self.json_request("GET", "/api/hashtags?q=")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["hashtags"], [])
+
+        self.app.record_hashtags("#Nuevo")
+        status, _, data = self.json_request("GET", "/api/hashtags?q=nue")
+        self.assertEqual([item["tag"] for item in data["hashtags"]], ["Nuevo"])
+
     def test_preview_records_hashtags_for_autocomplete(self):
         job = self.preview(quote="ETECSA, cuba")
         self.assertEqual(job["params"]["quote"], "#ETECSA #cuba")
