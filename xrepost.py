@@ -405,8 +405,21 @@ def repost(url):
     return "reposted" if js(N_UNRETWEET) > 0 else "unconfirmed"
 
 
+def bring_tab_front():
+    """X no monta el modal de cita si la pestaña está en segundo plano."""
+    try:
+        tab = current_tab()
+        target = tab.get("targetId") or tab.get("target_id")
+        if target:
+            activate_tab(target)
+            time.sleep(0.5)
+    except Exception:
+        pass
+
+
 def quote_repost(url, text):
     """Repost con cita: abre «Quote», escribe el comentario y publica."""
+    bring_tab_front()
     goto_url(url)
     wait_for_load()
     time.sleep(1.5)

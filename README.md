@@ -219,6 +219,8 @@ Si `X_SKIP_RETWEETS` ya está definida en el entorno, no se pregunta: se respeta
 | `X_APPLY=1 ./xrepost.sh --quote "#ETECSA" a 27/10/2026` | Repost con cita y el comentario `#ETECSA` |
 | `./xrepost.sh --quote "ETECSA, cuba" a 27/10/2026` | Dry-run de citas; normaliza a `#ETECSA #cuba` |
 
+Al citar, el motor trae la pestaña de Chrome al frente antes de abrir el menú: X no monta el modal de cita si la pestaña está en segundo plano.
+
 Las fechas por argumentos se escriben **DD/MM/AAAA** (también se acepta `AAAA-MM-DD` por compatibilidad). Si solo se pasa una, se usa como día único.
 
 También se puede pasar todo por variables de entorno, sin argumentos:
@@ -493,7 +495,7 @@ Todo lo siguiente se probó con la cuenta real, dejándola sin cambios (donde se
 17. **Autocompletado de cuentas** (entrada simulada con PTY): se sembraron cuentas, se escribió un prefijo, se eligió con `↓`/`Enter`, se completó con `Tab`, se encadenaron dos cuentas y se canceló con `Ctrl-C`; el valor devuelto fue el esperado y `accounts.json` se actualizó. Las pruebas de ranking cubren coincidencia exacta, prefijo, subcadena, recencia, frecuencia y exclusión de cuentas ya usadas en el mismo campo.
 17. **Validación sin interacción**: `./xrepost.sh u1 40/13/2026` termina con «Fecha no válida» y código 1, sin abrir Chrome.
 18. **Resumen de alcance**: la cabecera de cada ejecución muestra `alcance: solo publicaciones originales | respuestas: omitidas` (o la variante elegida).
-19. **Repost con cita (previsualización real desde el panel)**: con `--quote "#ETECSA"` y el rango 27–28/10/2026, la ejecución mostró `comentario de la cita: #ETECSA`, devolvió los 2 posts con fechas DD/MM/AAAA y no publicó nada (dry-run).
+19. **Repost con cita (cuenta real)**: se publicó una cita del post de `@Docker` sobre Docker Sandboxes (28/10/2026) con el comentario `#Docker` desde `@rignack_X`; la ejecución terminó con `citado con comentario`, el historial guardó `quoted` y la cita se verificó en el perfil. Antes, el dry-run con `--quote "#ETECSA"` mostró `comentario de la cita: #ETECSA`, devolvió los 2 posts con fechas DD/MM/AAAA y no publicó nada.
 20. **Autocompletado de hashtags (panel real)**: el campo bajo «Cuentas» sugirió los hashtags usados, excluyó los ya escritos en el mismo campo, aceptó la elección con `↓`/`Enter` y añadió el espacio para el siguiente; `ETECSA, cuba` se normalizó a `#ETECSA #cuba` y un comentario sin hashtags válidos se rechazó con aviso.
 21. **Pruebas automáticas**: 23 pruebas del panel (incluye `/api/hashtags`, validación de la cita y `X_QUOTE` en el entorno del motor), 7 de hashtags y 6 de cuentas.
 
