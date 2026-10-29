@@ -551,7 +551,7 @@ function summaryText(posts, params) {
     .map(([user, count]) => `${count} de ${user}`)
     .join(" · ");
   const scope = params.scope === "all" ? "con retweets" : "solo originales";
-  return `${posts.length} publicación(es) · ${detail} · ${params.from} → ${params.to} · ${scope}`;
+  return `${posts.length} publicación(es) · ${detail} · ${isoToDMY(params.from)} → ${isoToDMY(params.to)} · ${scope}`;
 }
 
 function statusClass(text) {
@@ -618,7 +618,7 @@ function openConfirm() {
   els.confirmSummary.replaceChildren();
   const rows = [
     ["Cuentas", params.users],
-    ["Fechas", `${params.from} → ${params.to}`],
+    ["Fechas", `${isoToDMY(params.from)} → ${isoToDMY(params.to)}`],
     ["Alcance", params.scope === "all" ? "Originales y retweets de otras cuentas" : "Solo publicaciones originales"],
     ["Máximo", `${params.limit} publicaciones`],
     ["Pausa", `${params.delay} s entre reposts`],
