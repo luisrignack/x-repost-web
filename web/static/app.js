@@ -352,6 +352,14 @@ function attachDateMask(input) {
 
 // Calendario nativo: el botón abre el selector y vuelca el valor como DD/MM/AAAA.
 function attachDatePicker(input, native) {
+  const sync = () => {
+    const iso = dmyToISO(input.value);
+    if (iso) native.value = iso;
+  };
+
+  native.addEventListener("pointerdown", sync);
+  native.addEventListener("focus", sync);
+
   native.addEventListener("input", () => {
     if (!native.value) return;
     input.value = isoToDMY(native.value);
@@ -359,8 +367,7 @@ function attachDatePicker(input, native) {
   });
 
   return () => {
-    const iso = dmyToISO(input.value);
-    if (iso) native.value = iso;
+    sync();
     try {
       if (typeof native.showPicker === "function") native.showPicker();
       else native.click();

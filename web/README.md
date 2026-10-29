@@ -71,9 +71,14 @@ Al arrancar, el servidor lo indica en la línea `Cuentas:`.
 ## Flujo
 
 Las fechas del panel se escriben en formato **DD/MM/AAAA** (las barras se
-insertan solas al teclear los 8 dígitos). El panel las convierte a ISO antes de
-llamar a la API, porque el motor y el historial siguen trabajando en ISO; el
-listado y el historial se muestran de vuelta en DD/MM/YYYY.
+insertan solas al teclear los 8 dígitos). El icono de calendario de cada campo
+abre el selector nativo del navegador y vuelca la fecha elegida en ese mismo
+formato. Mientras se escribe se rechazan días mayores que 31 y meses mayores
+que 12, y al completar la fecha se comprueba el calendario y el rango
+2006–2100 (la fecha imposible se marca en rojo y el panel no deja buscar).
+Después el panel las convierte a ISO antes de llamar a la API, porque el motor y
+el historial siguen trabajando en ISO; el listado y el historial se muestran de
+vuelta en DD/MM/YYYY.
 
 1. **Previsualizar**: busca publicaciones con el mismo motor del CLI. No toca la
    cuenta; genera un listado y archivos CSV/Markdown descargables.
