@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main, web-ui]
+  pull_request:
+    branches: [main, web-ui]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar herramientas
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest ruff
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+
+      # Subconjunto deliberado: E9 (errores de sintaxis), F63/F7/F82
+      # (nombres indefinidos, etc.). El estilo legacy del repo no se toca.
+      - name: Ruff
+        run: ruff check --select E9,F63,F7,F82 .
+
+      # Solo errores (no warnings de estilo) para no bloquear por deuda antigua.
+      - name: ShellCheck
+        run: shellcheck -S error xrepost.sh web/run.sh ci.sh sync_portable.sh
+
+      - name: Suite y guardas (pytest, sintaxis, portable, imports trackeados)
+        run: bash ./ci.sh

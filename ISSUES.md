@@ -11,7 +11,7 @@ Scope: `xrepost.py`, `xrepost.sh`, `xrepost_accounts.py`, `xrepost_hashtags.py`,
 | B1 keep-alive desync | **Fixed** — body drained on `_read_json` rejections; early POST rejections close the connection with `Connection: close`. Regression tests: `test_keep_alive_survives_rejected_post`, `test_early_rejection_closes_connection`. Live probe re-run: OK. |
 | B2 undo retry hidden | **Fixed** — new shared module `xrepost_history.py` (`history_state`) used by both engine and panel; `undoable` now follows the engine's state. Tests: `tests/test_history.py`, `test_undoable_survives_failed_undo`. Live probe re-run: OK. |
 | B3 untracked labels module | **Fixed — committed** in `d895ab5`: `xrepost_labels.py`, `xrepost_history.py` and `tests/test_history.py` are tracked. A fresh `git clone -b web-ui` passes the whole suite and imports the panel. `ci.sh` guards against regressions. |
-| B4 quote heuristic | **Fixed** — `quoted` now requires X's confirmation toast (link to the new post); otherwise `quote_unverified` (new label), which does not block retries. Tests: `test_quote_requires_confirmation_toast`, `test_quote_without_toast_is_not_marked_done`. Note: the toast selector is best-effort against X's DOM; verify once against the real site. |
+| B4 quote heuristic | **Fixed — closed with partial live verification (2026-11-17).** `quoted` still requires the toast; offline branches covered by `test_quote_requires_confirmation_toast` / `test_quote_without_toast_is_not_marked_done`. Read-only check on the real X DOM confirmed: the repost button (`data-testid="retweet"`), the Quote menu (`a[role="menuitem"][href*="/compose/post"]`), and the composer (`[data-testid="tweetTextarea_0"]` inside a dialog with `[data-testid="tweetButton"]`) are all still valid; the composer was closed without posting. The toast itself could not be confirmed without publishing (owner declined), so it stays as a one-time manual check. Observation: X's Post button had no `aria-disabled` attribute in the live DOM, so `QUOTE_POST_DISABLED` may be relying on a stale signal — the toast check still prevents false `quoted` records. |
 | B5 limit counts only successes | **Fixed** — circuit breaker stops the batch after 3 consecutive failures. Test: `test_circuit_breaker_stops_after_three_failures`. |
 | B6 malformed env crash | **Fixed** — `X_LIMIT`/`X_DELAY` parsed with a clear message and exit code 2. Test: `test_invalid_limit_exits_with_clear_message`. |
 | B7 env leakage | **Fixed** — job env clears `X_ONLY_URLS_FILE`, `X_UNDO_TARGET`, `X_UNDO_N`, `X_QUOTE` (repost jobs set `X_QUOTE` from validated params). Test: `test_server_env_does_not_leak_into_jobs`. |
@@ -218,13 +218,17 @@ local client.
    failure paths. The exercise exposed a latent harness bug:
    `"unretweetConfirm"` contains `"retweetConfirm"` and the generic branch
    won — fixed by matching the specific name first.
-4. **CI — Partly done**: `./ci.sh` runs pytest, `py_compile`, `bash -n`,
-   `node --check` and a tracked-import guard that fails with exit 1 on the B3
-   class of bug (verified by untracking a module on purpose). Still open: a
-   remote workflow with `ruff`/`shellcheck`.
-5. **Quote verification** (B4) — **still open**: the toast selector is
-   best-effort; verify once against the real X DOM before trusting it. The
-   offline paths (toast present/absent) are covered by tests.
+4. **CI — Done**: `./ci.sh` runs pytest, `py_compile`, `bash -n`,
+   `node --check`, the portable-sync check and a tracked-import guard that
+   fails with exit 1 on the B3 class of bug (verified by untracking a module on
+   purpose). Remote workflow `.github/workflows/ci.yml` adds `ruff` (only
+   `E9,F63,F7,F82`) and `shellcheck -S error` on the tracked shell scripts,
+   then runs `./ci.sh`. YAML parsed locally; linters could not be run on this
+   host (no network to install them), so watch the first GitHub run.
+5. **Quote verification** (B4) — **closed as partial**: all selectors except
+   the toast were verified read-only against the live X DOM; publishing a test
+   quote was declined by the owner, so the toast remains a manual one-time
+   check (see B4 above).
 6. **Action cap / circuit breaker** (B5) — **Done** (3 consecutive failures
    stop the batch, tested).
 7. **Shared history state module — Done**: `xrepost_history.py` is the single
