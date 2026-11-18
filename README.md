@@ -4,6 +4,29 @@ Herramienta para **repostear posts de usuarios concretos dentro de un rango de f
 
 No usa la API de X ni pide contraseñas: controla tu navegador real mediante CDP (Chrome DevTools Protocol) a través del harness `browser-use`.
 
+> **Documentación actualizada**: la referencia por audiencias está en [`docs/`](docs/). Empieza por [`docs/INSTALACION.md`](docs/INSTALACION.md), [`docs/USUARIO.md`](docs/USUARIO.md) y [`docs/SEGURIDAD.md`](docs/SEGURIDAD.md). El estado final de la modernización se resume en [`docs/INFORME_FINAL_MODERNIZACION.md`](docs/INFORME_FINAL_MODERNIZACION.md).
+
+### Documentación detallada
+
+| Documento | Contenido |
+| --- | --- |
+| [Auditoría inicial](docs/AUDITORIA_TECNICA_INICIAL.md) | Estado de partida y hallazgos. |
+| [Seguridad](docs/SEGURIDAD.md) | Autenticación, CSRF, permisos y CDP. |
+| [Modelo de amenazas](docs/MODELO_DE_AMENAZAS.md) | Actores, riesgos y controles. |
+| [Arquitectura](docs/ARQUITECTURA.md) | Capas, módulos y flujos. |
+| [Instalación](docs/INSTALACION.md) | Requisitos y puesta en marcha. |
+| [Configuración](docs/CONFIGURACION.md) | Variables, rutas y límites. |
+| [Guía de usuario](docs/USUARIO.md) | Uso del panel paso a paso. |
+| [CLI](docs/CLI.md) | Opciones y ejemplos de `xrepost.sh`. |
+| [API](docs/API.md) | Endpoints, cuerpos y respuestas. |
+| [Motor de X](docs/MOTOR_X.md) | Búsqueda, filtros y verificación. |
+| [Persistencia](docs/PERSISTENCIA.md) | Historial y documentos JSON. |
+| [Backup y restauración](docs/BACKUP_RESTORE.md) | Copias verificables. |
+| [Desarrollo](docs/DESARROLLO.md) | Convenciones y flujo de trabajo. |
+| [Pruebas](docs/TESTING.md) | Suite, cobertura y límites. |
+| [Changelog técnico](docs/CHANGELOG_TECNICO.md) | Cambios por fase. |
+| [Informe final](docs/INFORME_FINAL_MODERNIZACION.md) | Resultados y deuda pendiente. |
+
 ---
 
 ## Índice

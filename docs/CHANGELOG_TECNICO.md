@@ -1,0 +1,292 @@
+# Changelog técnico
+
+Registro de cambios de la modernización integral. Cada entrada indica archivos,
+motivo, impacto y verificación.
+
+## Fase 0 — Línea base
+
+**Archivos**: ninguno.
+
+**Motivo**: fijar el estado de partida.
+
+**Resultado**:
+
+- 96 pruebas y 18 subpruebas.
+- Python 3.14.4.
+- Sin `docs/`, sin sesiones/CSRF, sin trabajos persistentes.
+
+**Verificación**: `python3 -m pytest -q`.
+
+## Fase 1 — Seguridad
+
+### Archivos nuevos
+
+- `xrepost_security.py`: token, sesiones, CSRF, fuerza bruta, cookies,
+  `Host`/`Origin`.
+- `xrepost_fs.py`: permisos, escritura atómica, bloqueos, rutas seguras.
+- `xrepost_cdp.py`: validación del endpoint CDP.
+
+### Archivos modificados
+
+- `web/app.py`: autenticación por sesión, CSRF en escrituras, cabeceras de
+  seguridad, CSP, `Host`/`Origin`, `--token-file`, `--bootstrap-file`,
+  subprocesos sin shell y entorno con lista blanca.
+- `iniciar.sh`: token en archivo 0600, enlace de arranque 0600, sin token en el
+  log, `umask 077`.
+- `xrepost.sh`: `umask 077`, `--strict-cdp`, validación del endpoint.
+- `.github/workflows/ci.yml`: rama `modernizacion-integral`, `ruff`,
+  `shellcheck`, cobertura.
+
+### Motivo
+
+El token viajaba en la URL, no había CSRF y los subprocesos heredaban el
+entorno. Eran los riesgos críticos de la auditoría.
+
+### Impacto
+
+- Los clientes con `X-Token` siguen funcionando.
+- El navegador usa cookie `HttpOnly` + CSRF.
+- Los enlaces antiguos `/?token=…` siguen siendo válidos una vez.
+- Un `POST` sin CSRF ahora devuelve `403`.
+
+### Verificación
+
+`SecurityTest` (token, sesiones, CSRF, bloqueo, cookies, Host/Origin),
+`CdpTest` y las pruebas de `web/test_app.py` de sesión y CSRF.
+
+## Fase 2 — Integridad del historial
+
+### Archivos modificados
+
+- `xrepost_history.py`: esquema, validación, lectura tolerante, rotación,
+  diagnóstico, backup/restore con checksum.
+- `xrepost.py`: escritura atómica, `history_state` compartido, deduplicación,
+  no reintento de inciertos.
+- `xrepost_labels.py`: etiquetas de bloqueo e inciertos.
+- `xrepost.sh`: `--stats`, `--diagnose`, `--backup`, `--restore`.
+
+### Motivo
+
+El historial no era atómico y no había forma de diagnosticarlo o restaurarlo.
+
+### Impacto
+
+- Un corte durante la escritura no deja el archivo a medias.
+- `--diagnose` informa de líneas corruptas sin borrarlas.
+- `--restore` conserva el historial anterior.
+
+### Verificación
+
+`HistoryStateTest`, `HistoryTest` y las pruebas de diagnóstico/backup del
+panel.
+
+## Fase 3 — Motor verificable
+
+### Archivos nuevos
+
+- `xrepost_selectors.py`: selectores y sondas centralizadas.
+
+### Archivos modificados
+
+- `xrepost.py`:
+  - `_validate_run()` valida usuarios, fechas, límites y CDP antes de actuar.
+  - `PAGE_PROBLEM_JS` y `page_guard()` detectan bloqueos.
+  - `FATAL_RESULTS` detiene la tanda.
+  - `repost()` y `quote_repost()` verifican el estado real.
+  - `undo_one()` no marca como deshecho si no puede confirmar.
+  - `_filter_history()` omite ya hechos e inciertos.
+  - Exportación CSV neutraliza fórmulas.
+  - Filtros ampliados (`post_ok`).
+
+### Motivo
+
+El motor asumía el éxito tras pulsar el botón y podía reintentar acciones
+desconocidas, con riesgo de duplicar publicaciones.
+
+### Impacto
+
+- `reposted`/`quoted` solo se registran con verificación.
+- Un resultado desconocido queda como `unconfirmed`.
+- Captcha, sesión caducada, límite o suspensión detienen la tanda.
+
+### Verificación
+
+`web/test_engine_selected.py` y las pruebas de estado del historial.
+
+## Fase 4 — Trabajos persistentes
+
+### Archivos nuevos
+
+- `xrepost_jobs.py`: estados, registro, recuperación, poda, saneado.
+- `xrepost_store.py`: almacén JSON concurrente.
+
+### Archivos modificados
+
+- `web/app.py`: trabajos persistentes, `INTERRUPTED` al arrancar, snapshots,
+  exportaciones por trabajo, cancelación por grupo de procesos, timeout.
+
+### Motivo
+
+Reiniciar el panel perdía el estado y podía dejar procesos huérfanos.
+
+### Impacto
+
+- Los trabajos sobreviven al reinicio y se muestran como interrumpidos.
+- Los parámetros persistidos no incluyen secretos.
+- La cola impide dos ejecuciones simultáneas.
+
+### Verificación
+
+`JobsTest` y las pruebas de `/api/jobs` del panel.
+
+## Fase 5 — Funcionalidades nuevas
+
+### Archivos nuevos
+
+- `xrepost_filters.py`: perfiles y validación de filtros.
+- `xrepost_groups.py`: grupos, alias, favoritos, actividad.
+- `xrepost_inbox.py`: bandeja con estados y decisiones.
+- `xrepost_schedule.py`: programación solo de previsualización.
+- `xrepost_stats.py`: estadísticas reales.
+- `xrepost_exports.py`: CSV, Markdown, JSON, HTML, PDF y bundles.
+
+### Archivos modificados
+
+- `web/app.py`: endpoints y lógica de las cinco áreas.
+- `xrepost_inbox.py`: nuevo estado `unconfirmed`.
+- `web/static/*`: interfaz de las nuevas pestañas.
+
+### Motivo
+
+Faltaban revisión previa persistente, perfiles, grupos, programación,
+estadísticas y exportaciones completas.
+
+### Impacto
+
+- La previsualización alimenta la bandeja.
+- `apply` reconcilia estados: verificado, incierto o fallido.
+- La programación nunca publica.
+- Las estadísticas separan desconocidos y fallos.
+
+### Verificación
+
+`FiltersTest`, `GroupsTest`, `InboxTest`, `ScheduleTest`, `StatsTest`,
+`ExportsTest` y las pruebas del panel de cada área.
+
+## Fase 6 — UX/UI
+
+### Archivos modificados
+
+- `web/static/index.html`: 8 pestañas, regiones ARIA, diálogos, skip-link,
+  formularios completos.
+- `web/static/app.js`: estado de vista, CSRF, renderizado seguro, temas,
+  reconciliación de bandeja, programación, estadísticas.
+- `web/static/styles.css`: paleta, temas claro/oscuro, responsive, foco,
+  reduced motion.
+
+### Motivo
+
+La interfaz era una sola vista sin navegación, temas ni accesibilidad.
+
+### Impacto
+
+- Navegación por pestañas con teclado.
+- Temas persistidos.
+- Tablas y diálogos accesibles.
+- Sin desbordamiento horizontal en móvil (verificado a 390 px).
+
+### Verificación
+
+Pruebas de estructura de la UI y comprobación manual con el navegador:
+pestañas, tema, diálogo de confirmación, bandeja, estadísticas, grupos,
+perfiles, programación y responsive.
+
+## Fase 7 — Pruebas y CI
+
+### Archivos nuevos
+
+- `tests/test_core_modules.py` (24 pruebas).
+
+### Archivos modificados
+
+- `web/test_app.py`: +16 pruebas (sesión, CSRF, UI, cuentas, grupos, perfiles,
+  bandeja, programación, estadísticas, backups, exportaciones).
+- `ci.sh`: aviso de módulos no trackeados, `bash -n` de todos los scripts,
+  `node --check`, copia portable.
+- `.github/workflows/ci.yml`: cobertura, `ruff`, `shellcheck`, rama nueva.
+- `sync_portable.sh`: 12 módulos nuevos, `ci.sh` y
+  `tests/test_core_modules.py`.
+
+### Motivo
+
+La lógica nueva no tenía pruebas y la CI no cubría la copia portable ni los
+módulos.
+
+### Resultado
+
+- **136 pruebas y 18 subpruebas**, todas aprobadas.
+- `ci.sh` en verde.
+- Copia portable sincronizada (40 archivos).
+
+## Fase 8 — Documentación
+
+### Archivos nuevos
+
+- `docs/AUDITORIA_TECNICA_INICIAL.md`
+- `docs/SEGURIDAD.md`
+- `docs/MODELO_DE_AMENAZAS.md`
+- `docs/ARQUITECTURA.md`
+- `docs/INSTALACION.md`
+- `docs/CONFIGURACION.md`
+- `docs/USUARIO.md`
+- `docs/CLI.md`
+- `docs/API.md`
+- `docs/MOTOR_X.md`
+- `docs/PERSISTENCIA.md`
+- `docs/BACKUP_RESTORE.md`
+- `docs/DESARROLLO.md`
+- `docs/TESTING.md`
+- `docs/CHANGELOG_TECNICO.md`
+- `docs/INFORME_FINAL_MODERNIZACION.md`
+
+### Motivo
+
+La documentación existente era un único `README.md` sin separación por
+audiencia.
+
+### Impacto
+
+- Cada audiencia tiene su documento.
+- Los límites y riesgos están explícitos.
+- No se declaran métricas no medidas.
+
+## Cambios de comportamiento visibles
+
+| Antes | Ahora |
+| --- | --- |
+| `POST` con cookie funcionaba sin CSRF | Devuelve `403` sin `X-CSRF-Token`. |
+| El token quedaba en la URL | Se cambia por cookie y redirección. |
+| Un repost se marcaba como hecho al pulsar | Se verifica el estado real. |
+| Un resultado dudoso se reintentaba | Queda `unconfirmed` y no se reintenta sin `--force`. |
+| Reiniciar el panel perdía trabajos | Se recuperan como `INTERRUPTED`. |
+| Programar ejecutaba directamente | Solo previsualiza. |
+| Estadísticas sin denominador | Tasa con denominador visible. |
+| Exportación solo CSV/MD | CSV, MD, JSON, HTML, PDF y bundles. |
+
+## Compatibilidad
+
+Se conservan:
+
+- Opciones del CLI y variables `X_*`.
+- Endpoints antiguos y campos `status`, `lines`, `posts`, `progress`.
+- Formato del historial (`fecha,autor,usuario,texto,url,estado` en CSV).
+- `X-Token` para clientes de línea de comandos.
+- Estructura de `accounts.json` y `hashtags.json`.
+
+## Deuda pendiente
+
+- Retirar la cookie heredada `xrepost_token`.
+- Medir la cobertura real en un entorno con `coverage`.
+- Añadir pruebas end-to-end contra una cuenta de prueba cuando esté
+  autorizado.
+- Valorar TLS si el panel dejara de ser local.
