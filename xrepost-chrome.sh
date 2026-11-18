@@ -47,6 +47,18 @@ for entry in pathlib.Path("/proc").iterdir():
 PY
 }
 
+if [ "${1:-}" = "--stop" ]; then
+    PIDS="$(profile_pids)"
+    if [ -n "$PIDS" ]; then
+        # shellcheck disable=SC2086
+        kill $PIDS 2>/dev/null || true
+        echo "· Chrome del perfil detenido (PIDs: $PIDS)"
+    else
+        echo "· No había Chrome con ese perfil"
+    fi
+    exit 0
+fi
+
 if [ "$FORCE" -eq 1 ]; then
     PIDS="$(profile_pids)"
     if [ -n "$PIDS" ]; then
@@ -61,6 +73,25 @@ if [ "$FORCE" -eq 1 ]; then
 elif cdp_up; then
     echo "· Chrome ya escucha en $CDP_URL; se reutiliza."
     exit 0
+else
+    # Proceso del perfil vivo pero SIN CDP: es un arranque roto. Si no lo
+    # cerramos, el nuevo Chrome delega en él ("Opening in existing browser
+    # session") y nunca abre el puerto.
+    PIDS="$(profile_pids)"
+    if [ -n "$PIDS" ]; then
+        echo "· Chrome del perfil sin CDP (PIDs: $PIDS); reiniciándolo…"
+        # shellcheck disable=SC2086
+        kill $PIDS 2>/dev/null || true
+        for _ in $(seq 1 20); do
+            [ -z "$(profile_pids)" ] && break
+            sleep 0.25
+        done
+    fi
+fi
+
+# Locks residuales de un proceso que murió sin limpiarlos.
+if [ -z "$(profile_pids)" ]; then
+    rm -f "$PROFILE/SingletonLock" "$PROFILE/SingletonSocket" "$PROFILE/SingletonCookie" 2>/dev/null || true
 fi
 
 # Flags de proxy según la preferencia guardada.
@@ -69,10 +100,25 @@ while IFS= read -r flag; do
     [ -n "$flag" ] && FLAGS+=("$flag")
 done < <(python3 xrepost_network.py flags)
 
-CHROME=""
-for name in google-chrome google-chrome-stable chromium chromium-browser; do
-    if command -v "$name" >/dev/null 2>&1; then CHROME="$name"; break; fi
-done
+# Llamar al BINARIO REAL evita que un Chrome ya abierto "robe" el arranque
+# ("Opening in existing browser session") e ignore --user-data-dir/--remote-debugging-port.
+chrome_binary() {
+    local wrapper real
+    for candidate in /opt/google/chrome/chrome /usr/lib/chromium/chromium \
+                     /usr/lib/chromium-browser/chromium-browser; do
+        [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return; }
+    done
+    for name in google-chrome google-chrome-stable chromium chromium-browser; do
+        if wrapper="$(command -v "$name" 2>/dev/null)"; then
+            real="$(dirname "$(readlink -f "$wrapper")")/chrome"
+            if [ -x "$real" ]; then printf '%s\n' "$real"; else printf '%s\n' "$wrapper"; fi
+            return
+        fi
+    done
+    return 1
+}
+
+CHROME="$(chrome_binary || true)"
 [ -n "$CHROME" ] || { echo "No se encontró Chrome/Chromium" >&2; exit 1; }
 
 mkdir -p "$PROFILE"
@@ -89,8 +135,7 @@ done
 if ! cdp_up; then
     echo "Chrome no abrió el puerto CDP ($CDP_URL). Log:" >&2
     tail -20 "$LOG" >&2 || true
-    echo "Si dice 'Opening in existing browser session.', cierra TODAS las ventanas" >&2
-    echo "de Chrome y vuelve a intentarlo (el perfil dedicado no puede abrirse en paralelo)." >&2
+    echo "Revisa el log y los permisos del perfil: $PROFILE" >&2
     exit 1
 fi
 echo "· Chrome listo en $CDP_URL"

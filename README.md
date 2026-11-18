@@ -8,7 +8,7 @@ No usa la API de X ni pide contraseñas: controla tu navegador real mediante CDP
 
 ## Índice
 
-0. **[Cómo abrir la aplicación en cualquier situación](ABRIR_LA_APLICACION.md)** — guía práctica de arranque (panel, CDP, portable, CLI y problemas)
+0. **[Arranque en un comando](#50-arranque-en-un-comando)** · **[Cómo abrir la aplicación en cualquier situación](ABRIR_LA_APLICACION.md)** — guía práctica (panel, CDP, proxy, portable, CLI y problemas)
 1. [Qué es y qué hace](#1-qué-es-y-qué-hace)
 2. [Estructura de la carpeta](#2-estructura-de-la-carpeta)
 3. [Requisitos](#3-requisitos)
@@ -156,6 +156,15 @@ La skill queda en `~/.config/opencode/skills/browser-use/SKILL.md` y permite ped
 ---
 
 ## 5. Uso
+
+### 5.0 Arranque en un comando
+
+```bash
+cd ~/Downloads/x-repost-web
+./iniciar.sh
+```
+
+Comprueba requisitos, abre Chrome con CDP (con el proxy guardado) y levanta el panel, dejando la URL lista. No hace falta cerrar otros Chrome. `./iniciar.sh --status` muestra el estado; `--stop` lo detiene todo; `--check` solo verifica. Ver [`ABRIR_LA_APLICACION.md`](ABRIR_LA_APLICACION.md).
 
 ### 5.1 Arrancar Chrome con el puerto de control
 

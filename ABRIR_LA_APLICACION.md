@@ -11,6 +11,7 @@ Complementa a [`README.md`](README.md) (referencia del motor/CLI),
 
 | Situación | Qué hacer |
 |---|---|
+| **Arrancar la app (siempre, primera vez o no)** | **`cd ~/Downloads/x-repost-web && ./iniciar.sh`** — lo hace todo |
 | Ya hay un panel arriba y solo quieres usarlo | [§2](#2-el-panel-ya-est-arrancado) — abre la URL con token |
 | Quieres la interfaz web desde cero | [§3](#3-arrancar-el-panel-web-solo) — `./web/run.sh` |
 | El panel dice `chrome:false` o no encuentra posts | [§4](#4-arrancar-chrome-con-cdp-el-motor) — Chrome en el puerto 9222 |
@@ -53,29 +54,27 @@ browser-use --doctor
 
 Esperado: `browser-use, version 0.1.13` y el doctor sin errores. **No hace falta ninguna clave de IA**; el motor no usa modelos.
 
-### Paso 3 — Cierra TODAS las ventanas de Chrome
+### Paso 3 — ( Ya no es necesario cerrar Chrome )
 
-Guárdate el trabajo y ciérralas a mano. Es obligatorio: si queda una instancia, el siguiente comando solo dirá *"Opening in existing browser session."* e **ignorará** `--remote-debugging-port`.
+El lanzador usa el **binario real** de Chrome (`/opt/google/chrome/chrome`) con un perfil propio, así que puedes dejar abiertas tus otras ventanas. Si quedó un Chrome roto de un intento anterior con ese mismo perfil, el lanzador lo detecta, lo cierra y limpia sus locks.
 
-Último recurso (cierra todo Chrome):
-
-```bash
-pkill -f '/opt/google/chrome/chrome' || true
-```
-
-### Paso 4 — Arranca Chrome con el puerto de control
-
-Usa el lanzador del proyecto: **aplica automáticamente los flags de proxy** guardados en la preferencia de red.
+### Paso 4 — Arranca todo de una vez
 
 ```bash
 cd ~/Downloads/x-repost-web
-./xrepost-chrome.sh
-curl -s http://127.0.0.1:9222/json/version | grep Browser
+./iniciar.sh
 ```
 
-Esperado: una línea `"Browser": "Chrome/153.…"`. Si no aparece, revisa [§9](#9-resolucin-de-problemas) (Wayland/Vulkan o instancia previa).
+Ese único comando comprueba requisitos, asegura Chrome con CDP (aplicando el proxy guardado), levanta el panel si no está, y te da la URL. Es **idempotente**: si algo ya está arriba, lo reutiliza. Otras opciones:
 
-Si prefieres el comando directo, añade los flags que imprime `python3 xrepost_network.py flags`. Ver [§4.1](#41-proxy-trabajo-vs-casa).
+```bash
+./iniciar.sh --status     # estado de panel, CDP y red
+./iniciar.sh --no-open    # arranca pero no abre el navegador
+./iniciar.sh --stop       # detiene panel y el Chrome del perfil
+./iniciar.sh --check      # solo comprueba requisitos
+```
+
+Si prefieres piezas sueltas: `./xrepost-chrome.sh` (Chrome con CDP) y `./web/run.sh` (panel). Esperado en CDP: `"Browser": "Chrome/153.…"`. Ver [§4.1](#41-proxy-trabajo-vs-casa) para el proxy.
 
 ### Paso 5 — Inicia sesión en X en esa ventana
 
@@ -374,7 +373,7 @@ Las cuentas y hashtags recordados se borran con la papelera junto a cada campo (
 | `No se pudo conectar` | Panel caído o puerto distinto | [§3](#3-arrancar-el-panel-web-solo); comprueba `ss -ltnp \| grep 8765` |
 | `OSError: [Errno 98] Address already in use` | Ya hay un panel en 8765 | Úsalo ([§2](#2-el-panel-ya-est-arrancado)) o `--port 8766` |
 | `/api/health` → `"chrome": false` | Chrome sin CDP | [§4](#4-arrancar-chrome-con-cdp-el-motor) |
-| `Opening in existing browser session.` y CDP no abre | Hay otro Chrome abierto; el wrapper ignora los flags | **Cierra todas las ventanas de Chrome** y relanza con `--user-data-dir` y `--remote-debugging-port` |
+| `Opening in existing browser session.` y CDP no abre | Arrancó el wrapper en vez del binario real, o quedó un Chrome roto con el perfil | Usa `./iniciar.sh` / `./xrepost-chrome.sh` (limpian locks y usan el binario real) |
 | `vaInitialize failed` / error Wayland/Vulkan | GPU del portátil | Añade `--ozone-platform=x11 --disable-gpu --no-sandbox` |
 | `browser-use: command not found` | PATH sin `~/.local/bin` | `export PATH="$HOME/.local/bin:$PATH"` y `uv tool install --python 3.12 browser-use` |
 | "No hay resultados" en la búsqueda | Sesión de X caducada en el perfil CDP | Abre `https://x.com/` en esa ventana e inicia sesión |

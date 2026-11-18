@@ -13,7 +13,7 @@ FILES=(
     proxy_empresa.pac proxy_auto.pac
     web/app.py web/run.sh web/README.md web/test_app.py web/test_engine_selected.py
     web/static/app.js web/static/index.html web/static/styles.css
-    tests/test_accounts.py tests/test_hashtags.py tests/test_history.py tests/test_network.py
+    tests/test_accounts.py tests/test_hashtags.py tests/test_history.py tests/test_network.py tests/test_start_script.py
 )
 
 if [ "${1:-}" = "--check" ]; then
