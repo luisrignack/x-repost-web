@@ -18,11 +18,115 @@ Complementa a [`README.md`](README.md) (referencia del motor/CLI),
 | No quieres interfaz, solo comandos | [§6](#6-cli-sin-panel) — `./xrepost.sh` |
 | Es otra PC / no hay internet | [§7](#7-otra-pc-o-sin-internet) — carpeta `xrepost-portable/` |
 | Algo no funciona | [§9](#9-resolucin-de-problemas) — tabla síntoma → causa → solución |
+| **Es la primera vez / quieres empezar de cero** | **[§0.1](#01-desde-cero-paso-a-paso-primera-vez)** — 10 pasos ordenados |
 
 **Idea clave:** son **dos piezas independientes**.
 
 1. **Panel web** (`web/app.py`): servidor local en `127.0.0.1:8765` que muestra la UI y lanza el motor. Es lo que abres en el navegador.
 2. **Motor** (`xrepost.sh` + `xrepost.py`): se ejecuta dentro del harness `browser-use` y controla tu **Chrome real** por CDP (puerto `9222`). Sin Chrome con CDP, el panel abre pero **no puede buscar ni repostear** (`/api/health` → `"chrome": false`).
+
+---
+
+## 0.1 Desde cero, paso a paso (primera vez)
+
+Diez pasos en orden. Cada uno incluye **qué esperar**; si algo falla, salta a [§9](#9-resolucin-de-problemas).
+
+### Paso 1 — Comprueba el entorno
+
+```bash
+uname -s                       # debe decir Linux
+python3 --version              # 3.10 o superior
+command -v google-chrome || command -v chromium
+command -v uv || echo "FALTA uv"
+```
+
+Esperado: `Linux`, `Python 3.10+`, una ruta a Chrome, y `uv`. Si no hay `uv`, instálalo según tu distro o usa la vía portable de [§7](#7-otra-pc-o-sin-internet).
+
+### Paso 2 — Instala el harness `browser-use` (solo una vez)
+
+```bash
+uv tool install --python 3.12 browser-use
+export PATH="$HOME/.local/bin:$PATH"      # añade esta línea a ~/.bashrc
+browser-use --version
+browser-use --doctor
+```
+
+Esperado: `browser-use, version 0.1.13` y el doctor sin errores. **No hace falta ninguna clave de IA**; el motor no usa modelos.
+
+### Paso 3 — Cierra TODAS las ventanas de Chrome
+
+Guárdate el trabajo y ciérralas a mano. Es obligatorio: si queda una instancia, el siguiente comando solo dirá *"Opening in existing browser session."* e **ignorará** `--remote-debugging-port`.
+
+Último recurso (cierra todo Chrome):
+
+```bash
+pkill -f '/opt/google/chrome/chrome' || true
+```
+
+### Paso 4 — Arranca Chrome con el puerto de control
+
+```bash
+mkdir -p "$HOME/.local/state/xrepost/chrome-profile"
+nohup google-chrome --user-data-dir="$HOME/.local/state/xrepost/chrome-profile" \
+                    --remote-debugging-port=9222 \
+                    --no-first-run --no-default-browser-check \
+                    https://x.com/ > /var/tmp/xrepost-chrome.log 2>&1 &
+sleep 5
+curl -s http://127.0.0.1:9222/json/version | grep Browser
+```
+
+Esperado: una línea `"Browser": "Chrome/153.…"`. Si no aparece, revisa [§9](#9-resolucin-de-problemas) (Wayland/Vulkan o instancia previa).
+
+### Paso 5 — Inicia sesión en X en esa ventana
+
+En la ventana de Chrome que acaba de abrirse, entra en X **una sola vez**. La sesión queda guardada en `~/.local/state/xrepost/chrome-profile` y se reutiliza. Comprueba que ves tu timeline al recargar.
+
+### Paso 6 — Arranca el panel web
+
+```bash
+cd ~/Downloads/x-repost-web
+nohup python3 -u web/app.py --no-open > /var/tmp/xrepost-panel.log 2>&1 &
+sleep 3
+grep 'Panel:' /var/tmp/xrepost-panel.log
+```
+
+Esperado: `Panel: http://127.0.0.1:8765/?token=…`. Ese token es aleatorio y cambia en cada arranque.
+
+### Paso 7 — Abre la interfaz
+
+Copia la URL completa del paso 6 y pégala en el navegador. Verás el formulario de cuentas/fechas. Si Sale `No autorizado.`, falta el `?token=…`.
+
+### Paso 8 — Comprueba que las dos piezas están vivas
+
+```bash
+TOKEN=$(grep -oE 'token=[A-Za-z0-9_-]+' /var/tmp/xrepost-panel.log | head -1 | cut -d= -f2)
+curl -s -H "Cookie: xrepost_token=$TOKEN" http://127.0.0.1:8765/api/health
+```
+
+Esperado: `{"ok": true, "engine_ok": true, "chrome": true, "busy": false}`.
+- `engine_ok:false` → ruta al motor equivocada.
+- `chrome:false` → vuelve al **paso 3** y al **paso 4**.
+
+### Paso 9 — Haz una prueba SIN publicar
+
+En el panel: escribe una cuenta pública (p. ej. `kubernetesio`), rango de fechas reciente y pulsa **Previsualizar**. Verás autor, fecha, texto y enlace. **No pulses Repostear todavía**: es modo dry-run y no se publica nada.
+
+Equivalente por CLI:
+
+```bash
+cd ~/Downloads/x-repost-web
+./xrepost.sh kubernetesio 01/11/2026 15/11/2026     # sin X_APPLY = solo lista
+```
+
+### Paso 10 — Verificación final
+
+```bash
+python3 -m pytest -q          # 77 passed + 18 subtests
+tail -3 ~/.local/state/xrepost/history.jsonl
+./ci.sh                       # opcional: guardas extra
+```
+
+Ya está listo. Para **publicar de verdad**: marca los posts en el panel y pulsa Repostear (confirmación + retardo ≥5 s), o usa `X_APPLY=1 ./xrepost.sh …` en CLI. Al terminar, `Ctrl-C` en la terminal del panel lo detiene; Chrome queda abierto con tu sesión.
 
 ---
 
@@ -280,4 +384,4 @@ curl -s http://127.0.0.1:9222/json/version | head -c 120
 
 ---
 
-*Guía verificada el 2026-11-17 contra el código de la rama `web-ui` / `main` (commit `1c4229a`). Si cambias puerto, perfil o variables, actualiza este documento en el mismo commit.*
+*Guía verificada el 2026-11-18 contra el código de las ramas `web-ui` / `main`. Si cambias puerto, perfil o variables, actualiza este documento en el mismo commit.*
