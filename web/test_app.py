@@ -848,6 +848,25 @@ class WebTest(unittest.TestCase):
         self.assertEqual(entries[1]["quote"], "#ETECSA #cuba")
         self.assertTrue(all(e["run"] == "tanda-1" for e in entries))
 
+    def test_500_no_filtra_detalle_interno(self):
+        import app as app_module
+
+        original = app_module.read_history
+        secreto = "/ruta/secreta/no-filtrar"
+
+        def explota(*args, **kwargs):
+            raise RuntimeError(secreto)
+
+        app_module.read_history = explota
+        try:
+            status, _, body = self.json_request("GET", "/api/history")
+        finally:
+            app_module.read_history = original
+
+        self.assertEqual(status, 500)
+        self.assertNotIn(secreto, json.dumps(body))
+        self.assertIn("Error interno del servidor", body["error"])
+
     def test_prune_jobs_mantiene_ultimos_y_sus_directorios(self):
         creados = []
         for i in range(MAX_JOBS + 5):

@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 import webbrowser
 from http import HTTPStatus
@@ -678,6 +679,15 @@ class Handler(BaseHTTPRequestHandler):
         if self.application.verbose:
             super().log_message(fmt, *args)
 
+    def _internal_error(self, exc: Exception) -> None:
+        """500 genérico al cliente; el detalle queda solo en el log local (M7)."""
+        print(
+            f"[xrepost-web] {self.command} {self.path}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        traceback.print_exc(file=sys.stderr)
+        self._send_json({"error": "Error interno del servidor."}, 500)
+
     # --- utilidades HTTP ---------------------------------------------------
 
     def _host_ok(self) -> bool:
@@ -819,7 +829,7 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:  # pragma: no cover - salvaguarda
-            self._send_json({"error": f"Error interno: {exc}"}, 500)
+            self._internal_error(exc)
 
     def do_POST(self) -> None:  # noqa: N802
         try:
@@ -854,7 +864,7 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:  # pragma: no cover - salvaguarda
-            self._send_json({"error": f"Error interno: {exc}"}, 500)
+            self._internal_error(exc)
 
     def _index(self) -> None:
         query = parse_qs(urlparse(self.path).query)

@@ -21,11 +21,11 @@ Scope: `xrepost.py`, `xrepost.sh`, `xrepost_accounts.py`, `xrepost_hashtags.py`,
 | M3 mixed `posted_at` | **Fixed** — `iso_timestamp` normalizes DD/MM/YYYY → ISO at write time. Test: `test_posted_at_normalized_to_iso`. |
 | M4 apply summary | **Fixed** — shows "X de Y publicaciones procesadas", excluding unprocessed rows. |
 | M5 quote on undo events | **Fixed** — `quote` recorded only for repost actions (engine + panel env). |
-| M6 Linux-only assumptions | Open (documented here; intended platform is Linux). |
-| M7 500 echoes exception text | Open (low risk, local-only tool). |
-| Improvements 2–4, 7 (pruning, collect tests, CI, shared module) | Shared module done (B2); pruning, `collect()` tests and CI still open. |
+| M6 Linux-only assumptions | **Fixed (docs)** — `README.md` §3 states Linux-only and why (`date -d` GNU + `flock`/`fcntl`). |
+| M7 500 echoes exception text | **Fixed** — `Handler._internal_error()` logs method/path/traceback locally and returns `{"error": "Error interno del servidor."}`. Test `test_500_no_filtra_detalle_interno` injects a secret path and asserts it never reaches the client. |
+| Improvements 2–4, 7 (pruning, collect tests, CI, shared module) | **All done.** Pruning (`MAX_JOBS`), `ci.sh`, tracked-import guard and shared history module committed. Test gaps closed below. |
 
-Suite after fixes: **70 passed + 18 subtests** (baseline before the audit: 42);
+Suite after fixes: **77 passed + 18 subtests** (baseline before the audit: 42);
 `node --check`, `py_compile` and the engine's standalone fallback (no shared
 modules available) verified. Run `./ci.sh` to reproduce all checks plus the
 tracked-import guard.
@@ -36,7 +36,7 @@ tracked-import guard.
 
 | Check | Result |
 |---|---|
-| `python3 -m pytest` from repo root | 70 passed + 18 subtests (audit baseline: 42 + 14) |
+| `python3 -m pytest` from repo root | 77 passed + 18 subtests (audit baseline: 42 + 14) |
 | `python3 -m py_compile` (all Python files) | OK |
 | `bash -n xrepost.sh` | OK |
 | `node --check web/static/app.js` | OK |
@@ -203,27 +203,30 @@ local client.
 
 ## Improvements (prioritized)
 
-1. **Fix B1–B3** (desync, undoable logic, track `xrepost_labels.py`) —
-   small changes, highest value.
+1. **Fix B1–B3 — Done** (desync, undoable logic, tracked shared modules).
 2. **Prune state — Done**: `MAX_JOBS = 20` and `App._prune_jobs()` keep the
    newest 20 jobs in memory and on disk (called at startup and on every new
    job), protecting the running job and its preview's `selected.json`.
-   3 regression tests added. Note: the 42 directories already on disk are
-   removed the next time the panel restarts with the new code.
-3. **Test gaps**: the fake-browser harness only covers the selected-URL
-   repost path. Add cases for:
-   - `collect()` filtering: replies, retweets, keyword match/exclude,
-     date-range edges, cross-user dedup;
-   - `quote_repost`: missing quote menu, composer timeout, post button
-     never enabled;
-   - `undo_one` / `--undo-last` / `--undo URL`, including `undo_failed`
-     retry (would have caught B2).
+   3 regression tests added; the panel was restarted and the 42 old
+   directories were reduced to 20 (+2 log files).
+3. **Test gaps — Done (7 new tests)**: the fake browser now supports
+   `FAKE_RESULTS` (search results), `FAKE_RETWEETED`/`FAKE_UNDO_FAIL` (undo),
+   `FAKE_NO_QUOTE_MENU`/`FAKE_NO_COMPOSER`/`FAKE_DISABLED` (quote failures).
+   Added `run_cli()` for search/undo runs. Covered: `collect()` filtering
+   (replies, foreign retweets, `X_EXCLUDE`, out-of-range dates, dedup),
+   `--undo-last` with `undo_failed` retry, `--undo URL`, and the three quote
+   failure paths. The exercise exposed a latent harness bug:
+   `"unretweetConfirm"` contains `"retweetConfirm"` and the generic branch
+   won — fixed by matching the specific name first.
 4. **CI — Partly done**: `./ci.sh` runs pytest, `py_compile`, `bash -n`,
    `node --check` and a tracked-import guard that fails with exit 1 on the B3
    class of bug (verified by untracking a module on purpose). Still open: a
    remote workflow with `ruff`/`shellcheck`.
-5. **Quote verification** (B4) before trusting history for quotes.
-6. **Action cap / circuit breaker** (B5) to bound browser actions per run.
+5. **Quote verification** (B4) — **still open**: the toast selector is
+   best-effort; verify once against the real X DOM before trusting it. The
+   offline paths (toast present/absent) are covered by tests.
+6. **Action cap / circuit breaker** (B5) — **Done** (3 consecutive failures
+   stop the batch, tested).
 7. **Shared history state module — Done**: `xrepost_history.py` is the single
    source used by the engine, `--history` and the panel (B2 fix), committed
    together with `xrepost_labels.py`.

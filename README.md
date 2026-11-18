@@ -79,6 +79,11 @@ El historial y los estados no viven en la carpeta, sino en `~/.local/state/xrepo
 | Python | 3.12.14 (gestionado por `uv`) | Ejecuta el script |
 | `uv` | 0.12+ | Instala y aísla Python/paquetes |
 
+> **Solo Linux.** La validación de fechas usa `date -d` de GNU coreutils
+> (`xrepost.sh`) y el bloqueo de una sola ejecución usa `flock`/`fcntl`
+> (`xrepost.sh`, `xrepost_accounts.py`). En macOS la comprobación de fechas
+> falla y el lock se omite silenciosamente. La plataforma objetivo es Linux.
+
 Comprobar que todo está:
 
 ```bash
