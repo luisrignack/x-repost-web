@@ -1,0 +1,7 @@
+# Dependencias de ejecución.
+#
+# xrepost solo usa la biblioteca estándar de Python (3.10+) y Chrome/Chromium
+# mediante CDP. No hay paquetes de terceros que instalar para ejecutar la CLI
+# ni el panel. Este archivo existe para que las herramientas de auditoría y el
+# SBOM tengan un punto de entrada explícito: no añadas dependencias aquí sin
+# justificarlo en docs/DESARROLLO.md.

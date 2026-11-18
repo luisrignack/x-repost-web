@@ -5,3 +5,19 @@ panel-url.txt
 
 .qwen/
 .freebuff/
+
+# Artefactos de ejecución y pruebas
+web/.runs/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+sbom.json
+dist/
+build/
+*.egg-info/
+
+# Copia portable generada por sync_portable.sh.
+# Solo se versiona el lanzador; el resto se regenera en cada sincronización.
+xrepost-portable/*
+!xrepost-portable/start.sh

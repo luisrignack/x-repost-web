@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, web-ui, modernizacion-integral]
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -15,11 +18,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
 
       - name: Instalar herramientas
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest ruff coverage
+          python -m pip install -r requirements-dev.txt
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
 
@@ -35,10 +39,59 @@ jobs:
       - name: Sintaxis JavaScript
         run: node --check web/static/app.js
 
-      - name: Cobertura de los módulos nuevos (informativa)
+      - name: Bandit (seguridad, medium+)
+        run: bandit -q -r . -x ./xrepost-portable,./tests,./web/test_app.py,./web/test_engine_selected.py -ll
+
+      - name: pip-audit (dependencias de ejecución)
+        run: pip-audit -r requirements.txt --no-deps --disable-pip
+
+      - name: Gitleaks (árbol de trabajo)
+        run: |
+          curl -sSL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar xzf gitleaks.tar.gz gitleaks
+          ./gitleaks detect --source . --no-git --redact --verbose
+
+      # Informativo: el código histórico aún no está tipado por completo.
+      # Los errores se publican pero no bloquean la integración.
+      - name: Mypy (informativo)
+        continue-on-error: true
+        run: |
+          mypy --ignore-missing-imports --no-error-summary \
+            xrepost_fs.py xrepost_store.py xrepost_filters.py xrepost_cdp.py \
+            xrepost_security.py xrepost_jobs.py xrepost_exports.py xrepost_groups.py \
+            xrepost_inbox.py xrepost_schedule.py xrepost_stats.py xrepost_state.py
+
+      - name: Cobertura de los módulos nuevos (mínimo 90 %)
         run: |
           python -m coverage run --branch -m pytest -q
-          python -m coverage report --include='xrepost_fs.py,xrepost_store.py,xrepost_filters.py,xrepost_cdp.py,xrepost_security.py,xrepost_jobs.py,xrepost_exports.py,xrepost_groups.py,xrepost_inbox.py,xrepost_schedule.py,xrepost_stats.py,xrepost_history.py'
+          python -m coverage report --include='xrepost_fs.py,xrepost_store.py,xrepost_filters.py,xrepost_cdp.py,xrepost_security.py,xrepost_jobs.py,xrepost_exports.py,xrepost_groups.py,xrepost_inbox.py,xrepost_schedule.py,xrepost_stats.py,xrepost_history.py,xrepost_selectors.py,xrepost_state.py' --fail-under=90
+
+      - name: SBOM CycloneDX
+        run: |
+          cyclonedx-py requirements requirements-dev.txt -o sbom.json
+          python -c "import json; json.load(open('sbom.json'))"
 
       - name: Suite y guardas (pytest, sintaxis, portable, imports)
         run: bash ./ci.sh
+
+      - name: Paquete de distribución
+        run: |
+          mkdir -p dist
+          tar --exclude-vcs --exclude='xrepost-portable' --exclude='dist' \
+            --exclude='__pycache__' --exclude='.pytest_cache' \
+            -czf dist/xrepost-2.0.0.tar.gz \
+            README.md LICENSE_PENDING.md SECURITY.md CHANGELOG.md CONTRIBUTING.md \
+            docs xrepost*.py web/static web/app.py web/run.sh xrepost.sh iniciar.sh \
+            xrepost-chrome.sh sync_portable.sh ci.sh requirements*.txt pytest.ini ruff.toml \
+            tests proxy_auto.pac proxy_empresa.pac
+          sha256sum dist/*.tar.gz > dist/SHA256SUMS
+
+      - name: Publicar artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: xrepost-sbom-y-paquete
+          path: |
+            sbom.json
+            dist/*
+          retention-days: 14
