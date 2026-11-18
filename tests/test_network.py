@@ -49,10 +49,10 @@ class NetworkTest(unittest.TestCase):
 
     def test_server_incluye_esquema_y_bypass(self):
         flags = net.chrome_flags({
-            "mode": "server", "proxy": "internet.etecsa.cu:3128",
+            "mode": "server", "proxy": "proxy.ejemplo.cu:8080",
             "proxy_scheme": "http", "bypass": "localhost,.etecsa.cu",
         })
-        self.assertEqual(flags[0], "--proxy-server=http://internet.etecsa.cu:3128")
+        self.assertEqual(flags[0], "--proxy-server=http://proxy.ejemplo.cu:8080")
         self.assertEqual(flags[1], "--proxy-bypass-list=localhost,.etecsa.cu")
 
     def test_server_sin_proxy_se_rechaza(self):
@@ -84,7 +84,7 @@ class NetworkTest(unittest.TestCase):
         env = os.environ.copy()
         out = subprocess.run(
             [sys.executable, str(ROOT / "xrepost_network.py"), "set", "server",
-             "--proxy", "proxy:3128", "--scheme", "http"],
+             "--proxy", "proxy.ejemplo.cu:8080", "--scheme", "http"],
             env=env, capture_output=True, text=True, timeout=15,
         )
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -93,7 +93,7 @@ class NetworkTest(unittest.TestCase):
             env=env, capture_output=True, text=True, timeout=15,
         )
         lineas = out.stdout.strip().splitlines()
-        self.assertEqual(lineas[0], "--proxy-server=http://proxy:3128")
+        self.assertEqual(lineas[0], "--proxy-server=http://proxy.ejemplo.cu:8080")
         self.assertTrue(lineas[1].startswith("--proxy-bypass-list="))
 
 

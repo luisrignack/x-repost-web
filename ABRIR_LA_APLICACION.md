@@ -278,12 +278,12 @@ Sin panel (CLI):
 python3 xrepost_network.py set direct
 python3 xrepost_network.py set pac
 python3 xrepost_network.py set auto
-python3 xrepost_network.py set server --proxy internet.etecsa.cu:3128 --scheme http
+python3 xrepost_network.py set server --proxy <host:puerto-real> --scheme http
 python3 xrepost_network.py flags          # comprueba los flags resultantes
 ./xrepost-chrome.sh --force               # reinicia Chrome aplicando el cambio
 ```
 
-> **Importante sobre tu PAC:** `HTTPS internet.etecsa.cu` implica CONNECT TLS al **puerto 443**. Si tu proxy es en realidad HTTP en `3128`, usa el modo **Empresa · servidor** con esquema `http` y `internet.etecsa.cu:3128` (el bypass ya trae los dominios internos). El modo `Auto` usa `dnsResolve("internet.etecsa.cu")`: si ese nombre resuelve desde casa (VPN/DNS público), seguirá usando el proxy. Valídalo en ambos entornos.
+> **Sobre tu PAC:** declara exactamente `HTTPS internet.etecsa.cu`, sin puerto; eso implica CONNECT TLS al **puerto 443**. Si funciona en tu red, no cambies nada: usa el modo **Empresa · PAC**. El modo **Empresa · servidor** existe solo para el caso de que necesites declarar otro esquema o puerto: introduce ahí los valores reales. El modo `Auto` usa `dnsResolve("internet.etecsa.cu")`: si ese nombre resuelve desde casa (VPN/DNS público), seguirá usando el proxy. Valídalo en ambos entornos.
 
 `xrepost-portable/start.sh` también lee esta preferencia, así que en la otra PC basta con copiar `network.json` junto con el resto del estado.
 
@@ -383,7 +383,7 @@ Las cuentas y hashtags recordados se borran con la papelera junto a cada campo (
 | Cita no confirmada (`quote_unverified`) | X no mostró el toast de confirmación | No se marca como hecha: **reintenta**; no es un fallo del historial |
 | Token perdido | Se regenera en cada arranque | `grep 'Panel:'` en el log; si no, reinicia el panel |
 | En el trabajo no carga X; en casa sí | Falta el proxy corporativo | Selector **Red** → modo Empresa (PAC o servidor) → Aplicar |
-| Con el modo PAC sigue sin cargar | `HTTPS host` apunta a 443 y tu proxy puede ser HTTP 3128 | Usa modo **Empresa · servidor**, esquema `http`, `internet.etecsa.cu:3128` |
+| Con el modo PAC sigue sin cargar | El PAC asume HTTPS en 443; tu red puede exigir otro esquema/puerto | Usa modo **Empresa · servidor** con los valores reales de tu red |
 | "Hay una ejecución en curso" al aplicar red | Job activo | Espera a que termine y vuelve a Aplicar |
 | El cambio de red no surte efecto | Chrome ya estaba abierto y no se reinició | Pulsa **Aplicar** (reinicia) o `./xrepost-chrome.sh --force` |
 | Tests fallan | Entorno equivocado | `./ci.sh` desde la raíz (usa `tests/` y `web/`, no el portable) |

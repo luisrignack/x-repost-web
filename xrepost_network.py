@@ -16,7 +16,7 @@ Uso desde línea de comandos (lo usan los scripts shell):
   python3 xrepost_network.py get
   python3 xrepost_network.py flags
   python3 xrepost_network.py set direct
-  python3 xrepost_network.py set server --proxy internet.etecsa.cu:3128 --scheme http
+  python3 xrepost_network.py set server --proxy proxy.ejemplo.cu:8080 --scheme http
 """
 
 from __future__ import annotations

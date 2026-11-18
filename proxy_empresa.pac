@@ -1,7 +1,8 @@
 // PAC de la red de la empresa (modo "Empresa").
 // Tal como lo usa el usuario: dominios internos DIRECT, resto por el proxy.
-// OJO: "HTTPS host" implica CONNECT por TLS al puerto 443. Si tu proxy es
-// HTTP en 3128, usa el modo "Servidor manual" con esquema http en el panel.
+// Nota: "HTTPS host" implica CONNECT por TLS al puerto 443 (es lo que declara
+// este PAC). Si tu red exige otro esquema o puerto, usa el modo "Servidor
+// manual" del panel con los valores reales de tu red.
 function FindProxyForURL(url, host) {
     // Dominios de la empresa que deben omitir el proxy (conexión DIRECTA)
     if (dnsDomainIs(host, ".etecsa.cu") ||
