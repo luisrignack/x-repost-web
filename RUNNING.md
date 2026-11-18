@@ -5,6 +5,10 @@ Quick guide to run the program on this machine. Full reference: `README.md`
 **another PC**, use the self-contained `xrepost-portable/` folder and its
 `SETUP.md`.
 
+> **Any situation (panel already up, CDP missing, port conflicts, lost token,
+> another PC…):** see [`ABRIR_LA_APLICACION.md`](ABRIR_LA_APLICACION.md) — the
+> decision table and troubleshooting guide.
+
 ## Requirements
 
 - Linux desktop, Python 3.10+ (standard library only).

@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 
 DST=xrepost-portable
 FILES=(
-    README.md pytest.ini
+    README.md ABRIR_LA_APLICACION.md pytest.ini
     xrepost.py xrepost.sh xrepost_accounts.py xrepost_hashtags.py
     xrepost_history.py xrepost_labels.py
     web/app.py web/run.sh web/README.md web/test_app.py web/test_engine_selected.py
