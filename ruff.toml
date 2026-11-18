@@ -1,0 +1,5 @@
+# Configuración de ruff usada por CI (ver .github/workflows/ci.yml).
+# La copia xrepost-portable/ se genera con sync_portable.sh y no se analiza
+# porque duplica el código del repositorio.
+target-version = "py310"
+exclude = ["xrepost-portable", ".git", "__pycache__", ".pytest_cache", ".venv"]

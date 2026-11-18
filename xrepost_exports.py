@@ -82,13 +82,14 @@ def rows_to_html(rows: Iterable[dict], *, title: str = "Informe de xrepost", sub
     body = []
     for row in rows:
         link = html.escape(str(row.get("url") or ""), quote=True)
+        link_cell = f'<a href="{link}" rel="noopener noreferrer">Ver en X</a>' if link else ""
         body.append(
             "<tr>"
             f"<td>{html.escape(str(row.get('fecha', '')))}</td>"
             f"<td><strong>{html.escape(str(row.get('autor', '')))}</strong>"
             f"<br><span class='muted'>{html.escape(str(row.get('usuario', '')))}</span></td>"
             f"<td>{html.escape(str(row.get('texto', '')))}</td>"
-            f"<td>{'<a href=\"' + link + '\" rel=\"noopener noreferrer\">Ver en X</a>' if link else ''}</td>"
+            f"<td>{link_cell}</td>"
             f"<td><span class='pill'>{html.escape(str(row.get('estado', '')))}</span></td>"
             "</tr>"
         )

@@ -37,6 +37,28 @@ import datetime as dt
 from urllib.parse import quote, urlparse
 
 
+# browser-use inyecta estas funciones en el espacio global antes de ejecutar el
+# archivo (``exec browser-use < xrepost.py``). Se declaran aquí para que el
+# análisis estático (ruff F821) las conozca y para fallar con un mensaje claro
+# si el harness deja de proporcionarlas, en lugar de un ``NameError``.
+def _injected(name):
+    def _missing(*_args, **_kwargs):
+        raise RuntimeError(f"browser-use no ha inyectado {name}()")
+
+    return globals().get(name, _missing)
+
+
+js = _injected("js")
+goto_url = _injected("goto_url")
+wait_for_load = _injected("wait_for_load")
+type_text = _injected("type_text")
+current_tab = _injected("current_tab")
+list_tabs = _injected("list_tabs")
+new_tab = _injected("new_tab")
+close_tab = _injected("close_tab")
+activate_tab = _injected("activate_tab")
+
+
 def _env_num(name, default, cast):
     raw = os.environ.get(name, "").strip() or str(default)
     try:
