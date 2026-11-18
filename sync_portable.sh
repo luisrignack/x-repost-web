@@ -13,6 +13,7 @@ FILES=(
     xrepost_fs.py xrepost_selectors.py xrepost_store.py xrepost_filters.py
     xrepost_cdp.py xrepost_security.py xrepost_jobs.py xrepost_exports.py
     xrepost_groups.py xrepost_inbox.py xrepost_schedule.py xrepost_stats.py
+    xrepost_state.py
     proxy_empresa.pac proxy_auto.pac
     web/app.py web/run.sh web/README.md web/test_app.py web/test_engine_selected.py
     web/static/app.js web/static/index.html web/static/styles.css

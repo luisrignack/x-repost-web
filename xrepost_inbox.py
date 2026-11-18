@@ -16,6 +16,7 @@ import secrets
 from pathlib import Path
 
 import xrepost_history
+import xrepost_state
 import xrepost_store
 
 PENDING = "pending"
@@ -75,6 +76,8 @@ class InboxStore:
                     continue
                 existing = by_id.get(item_id)
                 if existing:
+                    if not existing.get("state"):
+                        existing["state"] = xrepost_state.state_for(existing.get("status", PENDING))
                     existing.update(
                         {
                             "url": url or existing.get("url", ""),
@@ -97,6 +100,7 @@ class InboxStore:
                         "text": str(post.get("texto") or "")[:1000],
                         "date": str(post.get("fecha") or "")[:40],
                         "status": PENDING,
+                        "state": xrepost_state.DISCOVERED,
                         "added": now(),
                         "last_seen": now(),
                         "run": run,
@@ -129,6 +133,11 @@ class InboxStore:
                 if isinstance(item, dict) and str(item.get("id")) in wanted:
                     if item.get("status") in (QUEUED, EXECUTED, VERIFIED, UNCONFIRMED):
                         continue
+                    origin = xrepost_state.normalize(item.get("state"), item.get("status", PENDING))
+                    target = xrepost_state.state_for(status)
+                    if not xrepost_state.can(origin, target):
+                        continue
+                    item["state"] = target
                     item["status"] = status
                     item["decided"] = now()
                     changed += 1
@@ -147,6 +156,10 @@ class InboxStore:
             nonlocal changed
             for item in data.get("items", []):
                 if isinstance(item, dict) and str(item.get("id")) in wanted:
+                    origin = xrepost_state.normalize(item.get("state"), item.get("status", PENDING))
+                    target = xrepost_state.state_for(status)
+                    xrepost_state.require(origin, target)
+                    item["state"] = target
                     item["status"] = status
                     item["detail"] = str(detail)[:500]
                     item["updated"] = now()
@@ -188,6 +201,9 @@ class InboxStore:
                 merged = {**base, **item, "id": str(item["id"])}
                 if merged.get("status") not in STATUSES:
                     merged["status"] = PENDING
+                merged["state"] = xrepost_state.normalize(
+                    merged.get("state"), merged.get("status", PENDING)
+                )
                 existing[str(item["id"])] = merged
                 count += 1
             data["items"] = list(existing.values())
