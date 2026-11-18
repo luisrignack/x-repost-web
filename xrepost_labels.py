@@ -20,11 +20,31 @@ LABELS = {
     "no_composer": "no se abrió el editor de la cita",
     "quote_failed": "no se pudo publicar la cita",
     "quote_unverified": "cita sin confirmar (revisa tu perfil)",
-    "unconfirmed": "no se pudo confirmar",
+    "unconfirmed": "no se pudo confirmar (revisa tu perfil)",
     "undone": "deshecho",
     "not_reposted": "no estaba reposteado",
     "undo_failed": "no se pudo deshacer",
+    # Bloqueos de la propia página de X: se detiene la tanda.
+    "session_expired": "la sesión de X caducó (inicia sesión en Chrome)",
+    "captcha": "X pidió una verificación humana",
+    "rate_limited": "X limitó las solicitudes (espera antes de reintentar)",
+    "suspended": "la cuenta aparece suspendida o restringida",
+    "page_unavailable": "la publicación o la página no está disponible",
+    "navigation_failed": "no se pudo abrir la publicación",
+    # Resultados de filtros (no son fallos del motor).
+    "filtered_lang": "descartado por idioma",
+    "filtered_media": "descartado por tipo de contenido",
+    "filtered_length": "descartado por longitud",
+    "filtered_regex": "descartado por expresión regular",
+    "skipped_uncertain": "omitido: un intento anterior quedó sin confirmar",
+    "skipped_history": "omitido: ya consta en el historial",
 }
+
+# Estados que no se reintentan automáticamente en otra ejecución.
+UNCERTAIN_RESULTS = ("unconfirmed", "quote_unverified")
+
+# Estados que obligan a detener toda la tanda.
+FATAL_RESULTS = ("session_expired", "captcha", "rate_limited", "suspended")
 
 
 def label(result: str) -> str:

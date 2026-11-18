@@ -36,6 +36,7 @@ import time
 import datetime as dt
 from urllib.parse import quote, urlparse
 
+
 def _env_num(name, default, cast):
     raw = os.environ.get(name, "").strip() or str(default)
     try:
@@ -43,6 +44,33 @@ def _env_num(name, default, cast):
     except ValueError:
         print(f"{name} no es un número válido: '{raw}'")
         sys.exit(2)
+
+
+def _regex_safe(pattern, field):
+    """Compila una expresión regular con límites (mitiga retroceso catastrófico).
+
+    Python no permite cancelar un ``re`` en curso; por eso se rechazan las
+    construcciones que suelen bloquear el hilo y se limita la longitud. El
+    texto de cada publicación está acotado a 5000 caracteres.
+    """
+    text = str(pattern or "").strip()
+    if not text:
+        return None
+    if len(text) > 200:
+        print(f"  aviso: {field} supera 200 caracteres; se ignora")
+        return None
+    if re.search(r"\((?:[^)]*[+*][^)]*)\)\s*[+*]", text) or re.search(r"\([^)]*\|[^)]*\)\s*[+*]", text):
+        print(f"  aviso: {field} tiene grupos repetidos (riesgo de bloqueo); se ignora")
+        return None
+    for match in re.finditer(r"\{\s*(\d+)", text):
+        if int(match.group(1)) > 100:
+            print(f"  aviso: {field} repite demasiadas veces; se ignora")
+            return None
+    try:
+        return re.compile(text, re.IGNORECASE | re.UNICODE)
+    except re.error as exc:
+        print(f"  aviso: {field} no es válida ({exc}); se ignora")
+        return None
 
 
 USERS = [u.strip().lstrip("@") for u in os.environ.get("X_USERS", "").split(",") if u.strip()]
@@ -61,6 +89,19 @@ CSV_PATH = os.environ.get("X_CSV", "")
 MD_PATH = os.environ.get("X_MD", "")
 QUOTE_TEXT = os.environ.get("X_QUOTE", "").strip()
 RUN_ID = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+# Filtros ampliados (los usa el panel; son opcionales en el CLI).
+EXACT = [k.strip().lower() for k in os.environ.get("X_EXACT", "").split(",") if k.strip()]
+LANGS = [k.strip().lower() for k in os.environ.get("X_LANG", "").split(",") if k.strip()]
+HASHTAG_FILTER = [k.strip().lstrip("#").lower() for k in os.environ.get("X_HASHTAGS_FILTER", "").split(",") if k.strip()]
+MIN_LEN = _env_num("X_MIN_LEN", 0, int) if os.environ.get("X_MIN_LEN", "").strip() else 0
+MAX_LEN = _env_num("X_MAX_LEN", 0, int) if os.environ.get("X_MAX_LEN", "").strip() else 0
+MEDIA_FILTER = os.environ.get("X_MEDIA", "").strip().lower()
+VIDEO_FILTER = os.environ.get("X_VIDEO", "").strip().lower()
+KIND_FILTER = os.environ.get("X_KIND", "").strip().lower()
+INCLUDE_RE = _regex_safe(os.environ.get("X_INCLUDE_REGEX", ""), "X_INCLUDE_REGEX")
+EXCLUDE_RE = _regex_safe(os.environ.get("X_EXCLUDE_REGEX", ""), "X_EXCLUDE_REGEX")
+
 HISTORY = os.environ.get("X_HISTORY") or os.path.join(
     os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
     "xrepost",
@@ -89,6 +130,22 @@ def _load_shared(module, attr):
 
 
 LABELS = _load_shared("xrepost_labels", "LABELS") or {}
+_UNCERTAIN = _load_shared("xrepost_labels", "UNCERTAIN_RESULTS") or ("unconfirmed", "quote_unverified")
+_FATAL = _load_shared("xrepost_labels", "FATAL_RESULTS") or (
+    "session_expired",
+    "captcha",
+    "rate_limited",
+    "suspended",
+)
+
+# Utilidades de escritura segura (atómicas, sin seguir enlaces simbólicos).
+_atomic_write = _load_shared("xrepost_fs", "atomic_write")
+_append_line = _load_shared("xrepost_fs", "append_line")
+_ensure_dir = _load_shared("xrepost_fs", "ensure_dir")
+_assert_regular = _load_shared("xrepost_fs", "assert_regular_file")
+_read_json = _load_shared("xrepost_fs", "read_json")
+_read_events = _load_shared("xrepost_history", "read_events")
+_csv_safe = _load_shared("xrepost_exports", "csv_safe")
 
 
 def label(res):
@@ -165,9 +222,12 @@ COLLECT_JS = (
     "url: l?('https://x.com'+l.getAttribute('href')):'',"
     "user: n?n.innerText.split('\\n')[0]:'',"
     "handle: handle,"
-    "text: x?x.innerText.slice(0,500):'',"
+    "text: x?x.innerText.slice(0,5000):'',"
     "ctx: r?r.innerText:'',"
-    "reply: reply"
+    "reply: reply,"
+    "media: !!a.querySelector('[data-testid=\"tweetPhoto\"],img[src*=\"pbs.twimg.com/media\"]'),"
+    "video: !!a.querySelector('video,[data-testid=\"videoPlayer\"]'),"
+    "lang: (x&&x.getAttribute('lang'))||a.getAttribute('lang')||document.documentElement.lang||''"
     "};})"
 )
 
@@ -244,6 +304,60 @@ CLICK_QUOTE_POST = (
     "if(!b)return false;b.click();return true;})()"
 )
 
+# Sonda de bloqueos de X: devuelve "" si la página parece normal o un código
+# (login, captcha, rate_limited, suspended, unavailable) si no. Se limita a la
+# columna principal para no confundir el texto de una publicación con un aviso.
+PAGE_PROBLEM_JS = _load_shared("xrepost_selectors", "PAGE_PROBLEM_JS") or (
+    "(function(){"
+    "var path=location.pathname||'';"
+    "if(path.indexOf('/i/flow/login')===0||path.indexOf('/login')===0)return 'login';"
+    "if(document.querySelector('[data-testid=\"loginButton\"]'))return 'login';"
+    "if(document.querySelector('iframe[src*=\"arkose\"],iframe[title*=\"captcha\" i],"
+    "[data-testid=\"captcha\"]'))return 'captcha';"
+    "var col=document.querySelector('[data-testid=\"primaryColumn\"]')||document.body;"
+    "var txt=(col?col.innerText:'').slice(0,3000).toLowerCase();"
+    "if(txt.indexOf('verify you are human')>=0||txt.indexOf('verifica que eres una persona')>=0)return 'captcha';"
+    "if(txt.indexOf('rate limit')>=0||txt.indexOf('too many requests')>=0||"
+    "txt.indexOf('demasiadas solicitudes')>=0)return 'rate_limited';"
+    "if(txt.indexOf('account suspended')>=0||txt.indexOf('cuenta suspendida')>=0||"
+    "txt.indexOf('temporarily restricted')>=0||txt.indexOf('restricción temporal')>=0)return 'suspended';"
+    "if(txt.indexOf('this post is unavailable')>=0||"
+    "txt.indexOf('esta publicación no está disponible')>=0||"
+    "txt.indexOf('this page doesn')>=0||txt.indexOf('algo salió mal')>=0)return 'unavailable';"
+    "return '';})()"
+)
+
+FATAL_BLOCK = ""
+
+
+def page_problem():
+    """Código de bloqueo visible en la página, o "" si todo parece normal."""
+    try:
+        return str(js(PAGE_PROBLEM_JS) or "")
+    except Exception:
+        return ""
+
+
+def page_guard():
+    """Traduce un bloqueo de X a un resultado estable; "" si se puede seguir."""
+    global FATAL_BLOCK
+    problem = page_problem()
+    if not problem:
+        return ""
+    if problem == "unavailable":
+        return "page_unavailable"
+    mapping = {
+        "login": "session_expired",
+        "captcha": "captcha",
+        "rate_limited": "rate_limited",
+        "suspended": "suspended",
+    }
+    result = mapping.get(problem, "page_unavailable")
+    if result in _FATAL:
+        FATAL_BLOCK = result
+    print(f"  BLOQUEO DE X: {label(result)}")
+    return result
+
 
 def now():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -268,8 +382,48 @@ def text_ok(text):
     low = (text or "").lower()
     if MATCH and not any(k in low for k in MATCH):
         return False
-    if any(k in low for k in EXCLUDE):
+    if EXCLUDE and any(k in low for k in EXCLUDE):
         return False
+    if EXACT and not any(k in low for k in EXACT):
+        return False
+    if INCLUDE_RE and not INCLUDE_RE.search(text or ""):
+        return False
+    if EXCLUDE_RE and EXCLUDE_RE.search(text or ""):
+        return False
+    if MIN_LEN and len(text or "") < MIN_LEN:
+        return False
+    if MAX_LEN and len(text or "") > MAX_LEN:
+        return False
+    if HASHTAG_FILTER:
+        present = {t.lower() for t in re.findall(r"#([^\s#,]{1,50})", text or "")}
+        if not any(tag in present for tag in HASHTAG_FILTER):
+            return False
+    return True
+
+
+def post_ok(post):
+    """Filtros que necesitan metadatos que no están en el texto."""
+    text = post.get("text") or ""
+    if not text_ok(text):
+        return False
+    lang = str(post.get("lang") or "").lower()
+    if LANGS and not any(lang == item or lang.startswith(item + "-") for item in LANGS):
+        return False
+    if MEDIA_FILTER:
+        if (MEDIA_FILTER == "yes") != bool(post.get("media")):
+            return False
+    if VIDEO_FILTER:
+        if (VIDEO_FILTER == "yes") != bool(post.get("video")):
+            return False
+    if KIND_FILTER:
+        is_reply = bool(post.get("reply"))
+        is_retweet = bool(post.get("retweet")) or "repost" in str(post.get("ctx") or "").lower() or "retweet" in str(post.get("ctx") or "").lower()
+        if KIND_FILTER == "reply" and not is_reply:
+            return False
+        if KIND_FILTER == "original" and (is_reply or is_retweet):
+            return False
+        if KIND_FILTER == "retweet" and not is_retweet:
+            return False
     return True
 
 
@@ -280,10 +434,18 @@ def load_selected_posts(path):
     publicaciones: se repostea exactamente lo que el usuario vio.
     """
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+        if _assert_regular:
+            _assert_regular(path)
+        if _read_json:
+            data = _read_json(path, default=None)
+        else:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
     except (OSError, ValueError) as e:
         print(f"  error al leer el listado revisado: {e}")
+        return []
+    if data is None:
+        print("  error al leer el listado revisado: archivo vacío o no válido")
         return []
     if not isinstance(data, list):
         print("  el listado revisado no tiene el formato esperado")
@@ -322,6 +484,12 @@ def load_selected_posts(path):
 
 def load_history():
     entries = []
+    if _read_events:
+        try:
+            return [e for e in _read_events(HISTORY) if isinstance(e, dict) and e.get("id")]
+        except Exception as exc:
+            print(f"  (aviso: no se pudo leer el historial: {exc})")
+            return []
     try:
         with open(HISTORY, encoding="utf-8") as f:
             for line in f:
@@ -360,12 +528,18 @@ def save_event(action, result, post=None, entry=None):
     }
     if action == "repost" and QUOTE_TEXT:
         rec["quote"] = QUOTE_TEXT
+    if not rec["id"]:
+        print("  (aviso: evento sin id; no se guarda en el historial)")
+        return
     try:
-        d = os.path.dirname(HISTORY)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        with open(HISTORY, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        if _append_line:
+            _append_line(HISTORY, json.dumps(rec, ensure_ascii=False, sort_keys=True))
+        else:
+            d = os.path.dirname(HISTORY)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(HISTORY, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except OSError as e:
         print(f"  (aviso: no se pudo guardar el historial: {e})")
 
@@ -378,6 +552,22 @@ def history_state(entries):
 def reposted_ids(entries):
     """IDs cuyo último estado conocido indica que están reposteados."""
     return history_state(entries)[0]
+
+
+def uncertain_ids(entries):
+    """IDs con un intento cuyo resultado nunca se confirmó.
+
+    Se omiten en ejecuciones posteriores salvo ``--force``: reintentar a ciegas
+    puede duplicar un repost o una cita que sí se publicó.
+    """
+    reposted, ours = history_state(entries)
+    pending = set()
+    for event in entries:
+        if event.get("result") in _UNCERTAIN and event.get("id"):
+            pending.add(str(event["id"]))
+        elif event.get("action") == "repost" and event.get("result") in ("reposted", "quoted", "already"):
+            pending.discard(str(event.get("id")))
+    return pending - reposted
 
 
 def undo_candidates(entries, target="", n=0):
@@ -411,12 +601,17 @@ def collect(user, d_from, d_to):
     print(f"\n[{user}] buscando {fmt_fecha(d_from)} .. {fmt_fecha(d_to)}")
     goto_url(url)
     wait_for_load()
+    problem = page_guard()
+    if problem:
+        return []
     if not wait_articles():
         print("  sin resultados (o no cargó)")
         return []
 
     seen, out = set(), []
     for _ in range(8):
+        if FATAL_BLOCK:
+            return out
         for r in (js(COLLECT_JS) or []):
             url = r.get("url") or ""
             if not url or url in seen:
@@ -432,12 +627,13 @@ def collect(user, d_from, d_to):
             ctx = (r.get("ctx") or "").lower()
             if SKIP_REPLIES and (r.get("reply") or any(k in ctx for k in REPLY_HINTS)):
                 continue
-            if not text_ok(r.get("text")):
+            if not post_ok(r):
                 SKIPPED_KW += 1
                 continue
             if url in SEEN:
                 continue
             SEEN.add(url)
+            r["user"] = r.get("user") or user
             r["search_user"] = user
             out.append(r)
         if len(out) >= 40:
@@ -453,6 +649,9 @@ def repost(url):
     goto_url(url)
     wait_for_load()
     time.sleep(1.5)
+    problem = page_guard()
+    if problem:
+        return problem
     if js(N_UNRETWEET) > 0:
         return "already"
     if js(N_RETWEET) == 0:
@@ -460,10 +659,16 @@ def repost(url):
     js(FIRST_RETWEET + ".click()")
     time.sleep(1.3)
     if not js(HAS_CONFIRM):
-        return "no_menu"
+        problem = page_guard()
+        return problem or "no_menu"
     js("document.querySelector('[data-testid=\"retweetConfirm\"]').click()")
     time.sleep(2.5)
-    return "reposted" if js(N_UNRETWEET) > 0 else "unconfirmed"
+    if js(N_UNRETWEET) > 0:
+        return "reposted"
+    # Sin el estado «unretweet» no hay confirmación real: puede ser un fallo de
+    # X o que la acción no se aplicó. Nunca se marca como éxito.
+    problem = page_guard()
+    return problem or "unconfirmed"
 
 
 def bring_tab_front():
@@ -484,6 +689,9 @@ def quote_repost(url, text):
     goto_url(url)
     wait_for_load()
     time.sleep(1.5)
+    problem = page_guard()
+    if problem:
+        return problem
 
     button = FIRST_RETWEET if js(N_RETWEET) > 0 else FIRST_UNRETWEET
     if js(N_RETWEET) == 0 and js(N_UNRETWEET) == 0:
@@ -491,7 +699,8 @@ def quote_repost(url, text):
     js(button + ".click()")
     time.sleep(1.3)
     if not js(HAS_QUOTE_MENU):
-        return "no_quote_option"
+        problem = page_guard()
+        return problem or "no_quote_option"
     js(QUOTE_MENU + ".click()")
 
     for _ in range(15):
@@ -499,7 +708,8 @@ def quote_repost(url, text):
             break
         time.sleep(1)
     else:
-        return "no_composer"
+        problem = page_guard()
+        return problem or "no_composer"
 
     if not js(FOCUS_QUOTE_EDITOR):
         return "no_composer"
@@ -529,13 +739,17 @@ def quote_repost(url, text):
         if js(HAS_POST_TOAST):
             return "quoted"
         time.sleep(0.5)
-    return "quote_unverified"
+    problem = page_guard()
+    return problem or "quote_unverified"
 
 
 def undo_one(url):
     goto_url(url)
     wait_for_load()
     time.sleep(1.5)
+    problem = page_guard()
+    if problem:
+        return problem
     if js(N_UNRETWEET) == 0:
         return "not_reposted"
     js(FIRST_UNRETWEET + ".click()")
@@ -543,7 +757,14 @@ def undo_one(url):
     if js(HAS_UNDO):
         js("document.querySelector('[data-testid=\"unretweetConfirm\"]').click()")
         time.sleep(2.0)
-    return "undone" if js(N_UNRETWEET) == 0 else "undo_failed"
+    elif js(N_UNRETWEET) > 0:
+        # Sin diálogo de confirmación la acción no se completó; no se puede
+        # afirmar que se deshizo.
+        return "undo_failed"
+    if js(N_UNRETWEET) == 0:
+        return "undone"
+    problem = page_guard()
+    return problem or "undo_failed"
 
 
 # --- exportación ------------------------------------------------------------
@@ -563,28 +784,51 @@ def build_rows(posts, statuses, default_status):
 
 
 def write_csv(rows, path):
-    d = os.path.dirname(os.path.abspath(path))
-    os.makedirs(d, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["fecha", "autor", "usuario", "texto", "url", "estado"])
-        w.writeheader()
-        w.writerows(rows)
+    import io
+
+    buffer = io.StringIO()
+    w = csv.DictWriter(
+        buffer, fieldnames=["fecha", "autor", "usuario", "texto", "url", "estado"], lineterminator="\n"
+    )
+    w.writeheader()
+    for row in rows:
+        clean = {}
+        for key, value in row.items():
+            text = "" if value is None else str(value)
+            if _csv_safe:
+                text = _csv_safe(text)
+            elif text.startswith(("=", "+", "-", "@", "\t", "\r")):
+                text = "'" + text
+            clean[key] = text
+        w.writerow(clean)
+    text = buffer.getvalue()
+    if _atomic_write:
+        _atomic_write(path, text)
+    else:
+        d = os.path.dirname(os.path.abspath(path))
+        os.makedirs(d, exist_ok=True)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            f.write(text)
 
 
 def write_md(rows, path):
     def esc(s):
         return str(s).replace("|", "\\|").replace("\n", " ")
 
-    d = os.path.dirname(os.path.abspath(path))
-    os.makedirs(d, exist_ok=True)
     lines = ["| Fecha | Autor | Texto | Enlace | Estado |", "|---|---|---|---|---|"]
     for r in rows:
         lines.append(
             f"| {esc(r['fecha'])} | {esc(r['autor'])} {esc(r['usuario'])} | "
             f"{esc(r['texto'])} | [post]({r['url']}) | {esc(r['estado'])} |"
         )
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+    text = "\n".join(lines) + "\n"
+    if _atomic_write:
+        _atomic_write(path, text)
+    else:
+        d = os.path.dirname(os.path.abspath(path))
+        os.makedirs(d, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
 
 
 def do_export(posts, statuses=None, default_status="solo listado"):
@@ -690,29 +934,93 @@ def use_own_tab() -> None:
 
 # --- principal --------------------------------------------------------------
 
-def main():
-    use_own_tab()
-
-    if MODE in ("undo", "undo_last"):
-        return run_undo()
-
+def _validate_run():
+    """Validación previa: evita actuar con datos fuera de rango."""
     if not USERS or not D_FROM:
         print("faltan X_USERS o X_FROM")
+        return False
+    if len(USERS) > 10:
+        print("demasiadas cuentas: como máximo 10")
+        return False
+    for user in USERS:
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", user):
+            print(f"cuenta no válida: @{user}")
+            return False
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", D_FROM or "") or not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}", D_TO or ""
+    ):
+        print("las fechas deben ser YYYY-MM-DD")
+        return False
+    try:
+        d_from = dt.date.fromisoformat(D_FROM)
+        d_to = dt.date.fromisoformat(D_TO)
+    except ValueError:
+        print("alguna fecha no existe en el calendario")
+        return False
+    if d_from > d_to:
+        print("la fecha inicial no puede ser posterior a la final")
+        return False
+    if d_from.year < 2006 or d_to.year > 2100:
+        print("el rango de fechas queda fuera de lo razonable (2006–2100)")
+        return False
+    if not 1 <= LIMIT <= 50:
+        print("X_LIMIT debe estar entre 1 y 50")
+        return False
+    if not 0 <= DELAY <= 300:
+        print("X_DELAY debe estar entre 0 y 300 segundos")
+        return False
+    if len(QUOTE_TEXT) > 280:
+        print("el comentario de la cita supera 280 caracteres")
+        return False
+    parse_endpoint = _load_shared("xrepost_cdp", "parse_endpoint")
+    if parse_endpoint:
+        try:
+            endpoint = parse_endpoint()
+        except Exception as exc:
+            print(f"CDP no válido: {exc}")
+            return False
+        if endpoint.problems:
+            print("CDP no válido: " + "; ".join(endpoint.problems))
+            return False
+    return True
+
+
+def _filter_history(found):
+    """Quita lo ya hecho y lo que quedó sin confirmar (salvo --force)."""
+    if FORCE:
+        return found, 0, 0
+    entries = load_history()
+    already = reposted_ids(entries)
+    uncertain = uncertain_ids(entries)
+    before = len(found)
+    pending = []
+    skipped_uncertain = 0
+    for p in found:
+        tid = tweet_id(p.get("url", ""))
+        if tid in uncertain:
+            skipped_uncertain += 1
+            continue
+        if tid in already:
+            continue
+        pending.append(p)
+    skipped_hist = before - len(pending) - skipped_uncertain
+    return pending, skipped_hist, skipped_uncertain
+
+
+def main():
+    if MODE in ("undo", "undo_last"):
+        use_own_tab()
+        return run_undo()
+
+    if not _validate_run():
         return 2
 
+    use_own_tab()
     selected_file = os.environ.get("X_ONLY_URLS_FILE", "").strip()
 
     if selected_file:
         found = load_selected_posts(selected_file)
-        # El listado revisado se filtra igual que la búsqueda: reaplicar una
-        # previsualización no debe repetir nada. Es imprescindible con citas,
-        # porque X no ofrece un «quitar cita» que sirva de verificación.
-        skipped_hist = 0
-        already = reposted_ids(load_history())
-        if already and not FORCE:
-            before = len(found)
-            found = [p for p in found if tweet_id(p.get("url", "")) not in already]
-            skipped_hist = before - len(found)
+        found, skipped_hist, skipped_uncertain = _filter_history(found)
         print(
             f"modo: {'APLICAR reposts' if APPLY else 'DRY-RUN (solo listar)'} "
             f"sobre {len(found)} publicaciones revisadas | límite={LIMIT} | delay={DELAY}s"
@@ -725,9 +1033,14 @@ def main():
                 f"({skipped_hist} ya reposteados o citados en ejecuciones "
                 "anteriores; usa --force para incluirlos)"
             )
+        if skipped_uncertain:
+            print(
+                f"({skipped_uncertain} omitidos: un intento anterior quedó sin confirmar; "
+                "revisa tu perfil y usa --force si quieres reintentarlos)"
+            )
         if not found:
-            if skipped_hist:
-                print("\nNada pendiente: todo el listado consta como hecho.")
+            if skipped_hist or skipped_uncertain:
+                print("\nNada pendiente: todo el listado consta como hecho o pendiente de revisión.")
                 do_export([])
                 return 0
             print("\nNo hay publicaciones seleccionadas.")
@@ -748,6 +1061,8 @@ def main():
 
         found = []
         for u in USERS:
+            if FATAL_BLOCK:
+                break
             try:
                 found.extend(collect(u, D_FROM, D_TO))
             except Exception as e:
@@ -756,16 +1071,16 @@ def main():
         if SKIPPED_RT:
             print(f"\n({SKIPPED_RT} retweets de otras cuentas ignorados; X_SKIP_RETWEETS=0 para incluirlos)")
         if SKIPPED_KW:
-            print(f"({SKIPPED_KW} descartados por X_MATCH/X_EXCLUDE)")
+            print(f"({SKIPPED_KW} descartados por los filtros)")
 
-        skipped_hist = 0
-        already = reposted_ids(load_history())
-        if already and not FORCE:
-            before = len(found)
-            found = [p for p in found if tweet_id(p.get("url", "")) not in already]
-            skipped_hist = before - len(found)
-            if skipped_hist:
-                print(f"({skipped_hist} ya reposteados en ejecuciones anteriores; usa --force para incluirlos)")
+        found, skipped_hist, skipped_uncertain = _filter_history(found)
+        if skipped_hist:
+            print(f"({skipped_hist} ya reposteados en ejecuciones anteriores; usa --force para incluirlos)")
+        if skipped_uncertain:
+            print(
+                f"({skipped_uncertain} omitidos por intentos sin confirmar; "
+                "revisa tu perfil antes de reintentar)"
+            )
 
     if not found:
         print("\nSin posts en ese rango.")
@@ -795,6 +1110,9 @@ def main():
         if done >= LIMIT:
             print(f"límite de {LIMIT} alcanzado")
             break
+        if FATAL_BLOCK:
+            print(f"tanda detenida por un bloqueo de X ({label(FATAL_BLOCK)})")
+            break
         res = repost(p["url"])
         statuses[p["url"]] = res
         print(f"  {label(res)}: {p['url']}")
@@ -803,6 +1121,10 @@ def main():
             done += 1
             failures = 0
             time.sleep(DELAY)
+        elif res in _FATAL:
+            # Un bloqueo de sesión, captcha o límite no se reintenta: seguir
+            # solo empeora la situación.
+            break
         else:
             failures += 1
             # El límite cuenta solo éxitos: sin este corte, una tanda donde
@@ -812,6 +1134,8 @@ def main():
                 break
     do_export(found, statuses, default_status="no procesado")
     print(f"\nTotal {'citado' if QUOTE_TEXT else 'reposteado'}: {done}")
+    if FATAL_BLOCK:
+        print(f"Incidente: {label(FATAL_BLOCK)}")
     return 0
 
 
