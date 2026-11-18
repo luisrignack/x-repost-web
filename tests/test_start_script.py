@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,9 +15,22 @@ CHROME = ROOT / "xrepost-chrome.sh"
 
 
 class StartScriptTest(unittest.TestCase):
+    def setUp(self):
+        # iniciar.sh --check exige browser-use en el PATH. En un runner de CI
+        # no está instalado (y no debe estarlo: la suite no abre Chrome), así
+        # que se inyecta un doble inocuo para probar la lógica del script.
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        bindir = Path(self.tmp.name)
+        fake = bindir / "browser-use"
+        fake.write_text("#!/bin/sh\necho 'browser-use 0.0-test'\n", encoding="utf-8")
+        fake.chmod(0o755)
+        self.env = os.environ.copy()
+        self.env["PATH"] = f"{bindir}{os.pathsep}{self.env.get('PATH', '')}"
+
     def run_script(self, *args):
         return subprocess.run(
-            ["bash", str(START), *args], cwd=str(ROOT),
+            ["bash", str(START), *args], cwd=str(ROOT), env=self.env,
             capture_output=True, text=True, timeout=30,
         )
 
