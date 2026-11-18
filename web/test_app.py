@@ -7,6 +7,7 @@ import csv
 import http.client
 import json
 import os
+import shlex
 import stat
 import tempfile
 import textwrap
@@ -215,6 +216,7 @@ class WebTest(unittest.TestCase):
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         self.saved_env = {}
+        self.set_env("XREPOST_NETWORK_CONFIG", str(self.root / "network.json"))
 
     def tearDown(self):
         self.httpd.shutdown()
@@ -847,6 +849,80 @@ class WebTest(unittest.TestCase):
         self.assertEqual(entries[0]["quote"], "")
         self.assertEqual(entries[1]["quote"], "#ETECSA #cuba")
         self.assertTrue(all(e["run"] == "tanda-1" for e in entries))
+
+    def test_network_get_muestra_modo_y_flags(self):
+        status, _, body = self.json_request("GET", "/api/network")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["mode"], "direct")
+        self.assertIn("--no-proxy-server", body["flags"])
+        self.assertEqual(set(body["modes"]), {"direct", "pac", "auto", "server"})
+
+    def test_network_set_valido_e_invalido(self):
+        status, _, body = self.json_request(
+            "POST", "/api/network", {"mode": "pac"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["mode"], "pac")
+        self.assertTrue(body["flags"][0].startswith("--proxy-pac-url=file:///"))
+
+        status, _, body = self.json_request(
+            "POST", "/api/network", {"mode": "server", "proxy": ""}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("proxy", body["error"].lower())
+
+    def test_network_restart_llama_al_lanzador_con_force(self):
+        import app as app_module
+
+        marker = self.root / "restart.args"
+        stub = self.root / "fake-chrome.sh"
+        stub.write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > "
+            + shlex.quote(str(marker))
+            + "\n",
+            encoding="utf-8",
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        original = app_module.CHROME_LAUNCHER
+        app_module.CHROME_LAUNCHER = stub
+        try:
+            status, _, body = self.json_request(
+                "POST", "/api/network/restart", {}
+            )
+        finally:
+            app_module.CHROME_LAUNCHER = original
+
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["success"])
+        self.assertEqual(marker.read_text(encoding="utf-8").strip(), "--force")
+
+    def test_network_restart_bloqueado_con_job_en_curso(self):
+        import app as app_module
+        from app import Job
+
+        marker = self.root / "restart-no-debia-llamarse"
+        stub = self.root / "fake-chrome-fail.sh"
+        stub.write_text(
+            "#!/usr/bin/env bash\ntouch " + shlex.quote(str(marker)) + "\n",
+            encoding="utf-8",
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        original = app_module.CHROME_LAUNCHER
+        app_module.CHROME_LAUNCHER = stub
+        job = Job("preview", {}, self.app.runs)
+        job.status = "running"
+        self.app.current = job
+        try:
+            status, _, body = self.json_request(
+                "POST", "/api/network/restart", {}
+            )
+        finally:
+            app_module.CHROME_LAUNCHER = original
+            self.app.current = None
+
+        self.assertEqual(status, 409)
+        self.assertIn("ejecución", body["error"].lower())
+        self.assertFalse(marker.exists())
 
     def test_500_no_filtra_detalle_interno(self):
         import app as app_module

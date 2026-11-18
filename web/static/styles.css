@@ -107,6 +107,28 @@ p { margin: 0; }
 .brand h1 span { font-size: 14px; font-weight: 500; color: var(--muted); letter-spacing: 0.02em; }
 .brand p { color: var(--muted); font-size: 13.5px; margin-top: 4px; }
 
+.net-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  font-size: 12.5px;
+}
+.net-control label { color: var(--muted); font-weight: 600; }
+.net-control select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: inherit;
+}
+.net-control #network-note { font-size: 11.5px; }
+
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .chip {

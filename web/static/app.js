@@ -52,6 +52,9 @@ const els = {
   applyNote: $("#apply-note"),
   chipEngine: $("#chip-engine"),
   chipChrome: $("#chip-chrome"),
+  networkMode: $("#network-mode"),
+  networkApply: $("#network-apply"),
+  networkNote: $("#network-note"),
   historyEmpty: $("#history-empty"),
   historyWrap: $("#history-wrap"),
   historyBody: $("#history-body"),
@@ -1343,6 +1346,53 @@ function setChip(element, ok, text) {
   }
 }
 
+const NETWORK_LABELS = {
+  direct: "Casa · sin proxy",
+  pac: "Empresa · PAC",
+  auto: "Automático · PAC",
+  server: "Empresa · servidor",
+};
+
+async function loadNetwork() {
+  try {
+    const net = await api("/api/network");
+    els.networkMode.value = net.mode;
+    const etiqueta = NETWORK_LABELS[net.mode] || net.mode;
+    const detalle = net.mode === "server"
+      ? `${net.proxy_scheme}://${net.proxy}`
+      : (net.mode === "direct" ? "" : "PAC");
+    els.networkNote.textContent = detalle ? `${etiqueta} · ${detalle}` : etiqueta;
+  } catch (_) {
+    els.networkNote.textContent = "configuración no disponible";
+  }
+}
+
+async function applyNetwork() {
+  const mode = els.networkMode.value;
+  const confirmar = window.confirm(
+    "Se reiniciará Chrome con la configuración de red elegida.\n" +
+    "Se cerrarán las pestañas de ese perfil de Chrome.\n" +
+    "Si tienes OTROS Chrome abiertos, ciérralos antes o el nuevo no arrancará.\n\n¿Continuar?"
+  );
+  if (!confirmar) {
+    await loadNetwork();
+    return;
+  }
+  els.networkApply.disabled = true;
+  try {
+    await api("/api/network", { method: "POST", body: { mode } });
+    await api("/api/network/restart", { method: "POST", body: {} });
+    toast(`Red aplicada: ${NETWORK_LABELS[mode] || mode}. Chrome reiniciado.`, "good");
+    await loadNetwork();
+    await refreshHealth();
+  } catch (err) {
+    toast(err.message || "No se pudo aplicar la red", "bad");
+    await loadNetwork();
+  } finally {
+    els.networkApply.disabled = false;
+  }
+}
+
 async function refreshHealth() {
   try {
     const health = await api("/api/health");
@@ -1556,9 +1606,11 @@ function init() {
     if (button) openUndo({ mode: "url", url: button.dataset.undo });
   });
 
+  els.networkApply.addEventListener("click", applyNetwork);
   setChip(els.chipEngine, null, "Comprobando…");
   setChip(els.chipChrome, null, "Comprobando…");
   syncButtons();
+  loadNetwork();
   refreshHealth();
   setInterval(refreshHealth, 15000);
   loadHistory();

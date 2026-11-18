@@ -22,6 +22,17 @@
       <span class="chip" id="chip-chrome"><i class="dot"></i> Chrome</span>
       <span class="chip chip-quiet"><i class="dot"></i> Solo 127.0.0.1</span>
     </div>
+    <div class="net-control" aria-label="Configuración de red">
+      <label for="network-mode">Red</label>
+      <select id="network-mode" title="Configuración de proxy de Chrome">
+        <option value="direct">Casa · sin proxy</option>
+        <option value="pac">Empresa · PAC</option>
+        <option value="auto">Automático · PAC</option>
+        <option value="server">Empresa · servidor</option>
+      </select>
+      <button id="network-apply" class="btn tiny" type="button" title="Reinicia Chrome con esta configuración">Aplicar</button>
+      <span id="network-note" class="muted" aria-live="polite"></span>
+    </div>
   </header>
 
   <main class="layout">

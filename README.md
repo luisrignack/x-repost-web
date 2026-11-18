@@ -39,6 +39,8 @@ Hace cuatro cosas:
 
 Por defecto **no repostea nada**: primero enseña la lista (modo *dry-run*). Solo actúa si se lo pides explícitamente con `X_APPLY=1`.
 
+El panel incluye un selector **Red** (Casa / Empresa-PAC / Automático / Servidor) que guarda la preferencia y reinicia Chrome con los flags de proxy correspondientes, para alternar entre la red del trabajo y casa. Ver [`ABRIR_LA_APLICACION.md`](ABRIR_LA_APLICACION.md) §4.1.
+
 ---
 
 ## 2. Estructura de la carpeta

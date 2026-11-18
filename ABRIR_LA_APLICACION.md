@@ -65,17 +65,17 @@ pkill -f '/opt/google/chrome/chrome' || true
 
 ### Paso 4 — Arranca Chrome con el puerto de control
 
+Usa el lanzador del proyecto: **aplica automáticamente los flags de proxy** guardados en la preferencia de red.
+
 ```bash
-mkdir -p "$HOME/.local/state/xrepost/chrome-profile"
-nohup google-chrome --user-data-dir="$HOME/.local/state/xrepost/chrome-profile" \
-                    --remote-debugging-port=9222 \
-                    --no-first-run --no-default-browser-check \
-                    https://x.com/ > /var/tmp/xrepost-chrome.log 2>&1 &
-sleep 5
+cd ~/Downloads/x-repost-web
+./xrepost-chrome.sh
 curl -s http://127.0.0.1:9222/json/version | grep Browser
 ```
 
 Esperado: una línea `"Browser": "Chrome/153.…"`. Si no aparece, revisa [§9](#9-resolucin-de-problemas) (Wayland/Vulkan o instancia previa).
+
+Si prefieres el comando directo, añade los flags que imprime `python3 xrepost_network.py flags`. Ver [§4.1](#41-proxy-trabajo-vs-casa).
 
 ### Paso 5 — Inicia sesión en X en esa ventana
 
@@ -258,6 +258,37 @@ El panel debe pasar a `"chrome": true` (recarga la página si hace falta).
 
 ---
 
+## 4.1 Proxy: trabajo vs casa
+
+El proxy se fija **al arrancar Chrome**: no se puede cambiar en caliente desde CDP.
+Por eso el panel tiene un selector **Red** en la barra superior:
+
+| Modo | Cuándo | Flags que aplica |
+|---|---|---|
+| **Casa · sin proxy** | sin proxy (o proxy transparente) | `--no-proxy-server` |
+| **Empresa · PAC** | red corporativa con tu PAC | `--proxy-pac-url=file:///.../proxy_empresa.pac` |
+| **Automático · PAC** | quieres que decida el DNS | `--proxy-pac-url=file:///.../proxy_auto.pac` |
+| **Empresa · servidor** | proxy HTTP/HTTPS explícito | `--proxy-server=<scheme>://host:puerto` + bypass |
+
+**Para cambiar de red:** elige el modo → **Aplicar** → confirma. El panel guarda la preferencia en `~/.local/state/xrepost/network.json`, **cierra solo el Chrome del perfil dedicado** y lo relanza con los flags nuevos. Se avisa antes porque se cierran las pestañas de ese perfil. Si hay una ejecución en curso, el botón responde `409` y no reinicia nada.
+
+Sin panel (CLI):
+
+```bash
+python3 xrepost_network.py set direct
+python3 xrepost_network.py set pac
+python3 xrepost_network.py set auto
+python3 xrepost_network.py set server --proxy internet.etecsa.cu:3128 --scheme http
+python3 xrepost_network.py flags          # comprueba los flags resultantes
+./xrepost-chrome.sh --force               # reinicia Chrome aplicando el cambio
+```
+
+> **Importante sobre tu PAC:** `HTTPS internet.etecsa.cu` implica CONNECT TLS al **puerto 443**. Si tu proxy es en realidad HTTP en `3128`, usa el modo **Empresa · servidor** con esquema `http` y `internet.etecsa.cu:3128` (el bypass ya trae los dominios internos). El modo `Auto` usa `dnsResolve("internet.etecsa.cu")`: si ese nombre resuelve desde casa (VPN/DNS público), seguirá usando el proxy. Valídalo en ambos entornos.
+
+`xrepost-portable/start.sh` también lee esta preferencia, así que en la otra PC basta con copiar `network.json` junto con el resto del estado.
+
+---
+
 ## 5. Todo en un comando (portable)
 
 `start.sh` comprueba requisitos (con consentimiento), abre Chrome con CDP si no está activo, y levanta el panel:
@@ -351,6 +382,10 @@ Las cuentas y hashtags recordados se borran con la papelera junto a cada campo (
 | La UI da 403 "Host/Origen no permitido" | Abierta vía `file://`, IP o proxy | Usa siempre `http://127.0.0.1:8765/...` en el mismo equipo |
 | Cita no confirmada (`quote_unverified`) | X no mostró el toast de confirmación | No se marca como hecha: **reintenta**; no es un fallo del historial |
 | Token perdido | Se regenera en cada arranque | `grep 'Panel:'` en el log; si no, reinicia el panel |
+| En el trabajo no carga X; en casa sí | Falta el proxy corporativo | Selector **Red** → modo Empresa (PAC o servidor) → Aplicar |
+| Con el modo PAC sigue sin cargar | `HTTPS host` apunta a 443 y tu proxy puede ser HTTP 3128 | Usa modo **Empresa · servidor**, esquema `http`, `internet.etecsa.cu:3128` |
+| "Hay una ejecución en curso" al aplicar red | Job activo | Espera a que termine y vuelve a Aplicar |
+| El cambio de red no surte efecto | Chrome ya estaba abierto y no se reinició | Pulsa **Aplicar** (reinicia) o `./xrepost-chrome.sh --force` |
 | Tests fallan | Entorno equivocado | `./ci.sh` desde la raíz (usa `tests/` y `web/`, no el portable) |
 
 ---

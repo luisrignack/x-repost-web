@@ -39,6 +39,7 @@ ROOT = WEB_DIR.parent
 STATIC_DIR = WEB_DIR / "static"
 DEFAULT_ENGINE = ROOT / "xrepost.sh"
 DEFAULT_RUNS = WEB_DIR / ".runs"
+CHROME_LAUNCHER = ROOT / "xrepost-chrome.sh"
 
 # El motor y el archivo de cuentas viven un nivel arriba; app.py se ejecuta
 # desde web/, así que su carpeta no está en sys.path por defecto.
@@ -48,6 +49,7 @@ import xrepost_accounts  # noqa: E402  (depende del sys.path anterior)
 import xrepost_hashtags  # noqa: E402
 import xrepost_history  # noqa: E402
 import xrepost_labels  # noqa: E402
+import xrepost_network  # noqa: E402
 
 MAX_BODY = 1_000_000
 MAX_LOG = 2_000
@@ -95,6 +97,44 @@ def chrome_ok() -> bool:
             return resp.status == 200
     except Exception:
         return False
+
+
+def network_status() -> dict:
+    """Preferencia de red actual + flags que se aplicarán al relanzar Chrome."""
+    cfg = xrepost_network.load_config()
+    try:
+        flags = xrepost_network.chrome_flags(cfg)
+    except ValueError:
+        flags = []
+    return {
+        "mode": cfg["mode"],
+        "modes": list(xrepost_network.MODES),
+        "proxy": cfg.get("proxy", ""),
+        "proxy_scheme": cfg.get("proxy_scheme", "http"),
+        "pac_path": cfg.get("pac_path", ""),
+        "bypass": cfg.get("bypass", ""),
+        "flags": flags,
+        "chrome_running": chrome_ok(),
+    }
+
+
+def restart_chrome() -> None:
+    """Cierra y relanza Chrome con la preferencia vigente (llamada del panel)."""
+    if not CHROME_LAUNCHER.exists():
+        raise HttpError(500, "No se encontró el lanzador de Chrome.")
+    try:
+        proc = subprocess.run(
+            ["bash", str(CHROME_LAUNCHER), "--force"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        raise HttpError(504, "Chrome tardó demasiado en arrancar.")
+    if proc.returncode != 0:
+        print(f"[xrepost-web] restart_chrome falló: {proc.stderr[-800:]}", file=sys.stderr)
+        raise HttpError(500, "No se pudo reiniciar Chrome con la nueva configuración.")
 
 
 def normalize_users(users: str) -> str:
@@ -819,6 +859,8 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
             if path.startswith("/api/"):
                 if not self._token_ok():
                     raise HttpError(401, "No autorizado.")
+                if path == "/api/network":
+                    return self._send_json(network_status())
                 return self._api_get(path)
             raise HttpError(404, "Ruta no encontrada.")
         except HttpError as exc:
@@ -846,6 +888,10 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
                 raise HttpError(401, "No autorizado.")
             path = urlparse(self.path).path
             data = self._read_json()
+            if path == "/api/network":
+                return self._api_network_set(data)
+            if path == "/api/network/restart":
+                return self._api_network_restart()
             if path == "/api/preview":
                 return self._api_preview(data)
             if path == "/api/apply":
@@ -984,6 +1030,27 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
             )
 
         raise HttpError(404, "Ruta no encontrada.")
+
+    def _api_network_set(self, data: dict) -> None:
+        if not isinstance(data, dict):
+            raise HttpError(400, "Datos no válidos.")
+        try:
+            cfg = xrepost_network.save_config(data)
+        except ValueError as exc:
+            raise HttpError(400, str(exc))
+        print(f"[xrepost-web] red → {cfg['mode']}", file=sys.stderr)
+        self._send_json(network_status())
+
+    def _api_network_restart(self) -> None:
+        with self.application.lock:
+            busy = bool(
+                self.application.current
+                and self.application.current.status == "running"
+            )
+        if busy:
+            raise HttpError(409, "Hay una ejecución en curso. Espera antes de cambiar de red.")
+        restart_chrome()
+        self._send_json({"success": True, **network_status()})
 
     def _api_preview(self, data: dict) -> None:
         params = validate_repost_params(data, apply=False)

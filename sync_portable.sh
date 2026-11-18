@@ -9,10 +9,11 @@ DST=xrepost-portable
 FILES=(
     README.md ABRIR_LA_APLICACION.md pytest.ini
     xrepost.py xrepost.sh xrepost_accounts.py xrepost_hashtags.py
-    xrepost_history.py xrepost_labels.py
+    xrepost_history.py xrepost_labels.py xrepost_network.py xrepost-chrome.sh
+    proxy_empresa.pac proxy_auto.pac
     web/app.py web/run.sh web/README.md web/test_app.py web/test_engine_selected.py
     web/static/app.js web/static/index.html web/static/styles.css
-    tests/test_accounts.py tests/test_hashtags.py tests/test_history.py
+    tests/test_accounts.py tests/test_hashtags.py tests/test_history.py tests/test_network.py
 )
 
 if [ "${1:-}" = "--check" ]; then
