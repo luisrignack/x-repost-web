@@ -45,6 +45,42 @@ STATUS_FOR_STATE = {
     INTERRUPTED: "interrupted",
 }
 
+# Transiciones permitidas. Los estados terminales no vuelven a RUNNING: un
+# reintento crea un trabajo nuevo con su propio identificador. INTERRUPTED
+# tampoco se reanuda solo porque el resultado externo es desconocido.
+TRANSITIONS: dict[str, frozenset[str]] = {
+    CREATED: frozenset({QUEUED, CANCELLED, FAILED}),
+    QUEUED: frozenset({RUNNING, CANCELLED, FAILED, INTERRUPTED}),
+    RUNNING: frozenset({COMPLETED, FAILED, CANCELLED, TIMED_OUT, INTERRUPTED}),
+    COMPLETED: frozenset(),
+    FAILED: frozenset(),
+    CANCELLED: frozenset(),
+    TIMED_OUT: frozenset(),
+    INTERRUPTED: frozenset(),
+}
+
+
+class JobStateError(ValueError):
+    """Transición de estado de trabajo no permitida."""
+
+
+def can_transition(current: object, new: object) -> bool:
+    """Indica si un trabajo puede pasar de ``current`` a ``new``."""
+    if new not in STATES:
+        return False
+    if not current:
+        # Registros anteriores a la máquina de estados: se aceptan una vez.
+        return True
+    if current == new:
+        return True
+    return new in TRANSITIONS.get(str(current), frozenset())
+
+
+def require_transition(current: object, new: object) -> None:
+    if not can_transition(current, new):
+        raise JobStateError(f"Transición de trabajo no válida: {current} → {new}")
+
+
 SENSITIVE_KEYS = {"confirm", "token", "csrf", "password", "secret", "only_urls_file"}
 
 
@@ -130,6 +166,8 @@ class JobStore:
             state = fields["state"]
             if state not in STATES:
                 raise ValueError(f"Estado de trabajo no válido: {state}")
+            current = (self.get(job_id) or {}).get("state")
+            require_transition(current, state)
             fields.setdefault("status", STATUS_FOR_STATE[state])
         if "params" in fields:
             fields["params"] = sanitize_params(fields["params"])

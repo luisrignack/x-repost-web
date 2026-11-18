@@ -116,6 +116,7 @@ else
 fi
 
 echo "== 3/3 Panel web =="
+STARTED=0
 if panel_up; then
     echo "  ya estaba arriba en $BASE/"
 else
@@ -134,10 +135,13 @@ else
         exit 1
     fi
     echo "  arrancado en $BASE/"
+    STARTED=1
 fi
 
 URL="$BASE/"
-if [ -f "$BOOTSTRAP_FILE" ]; then
+# El enlace con token solo tiene sentido en el arranque recién hecho: es de un
+# solo uso y el archivo puede contener uno ya canjeado.
+if [ "$STARTED" -eq 1 ] && [ -f "$BOOTSTRAP_FILE" ]; then
     URL="$(cat "$BOOTSTRAP_FILE")"
 fi
 echo

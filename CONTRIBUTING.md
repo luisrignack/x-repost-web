@@ -12,6 +12,17 @@ python3 -m venv .venv
 pip install -r requirements-dev.txt
 ```
 
+**Regla de oro:** si el índice configurado (`nexus.etecsa.cu`) no responde,
+reintenta directo contra PyPI antes de dar la instalación por fallida:
+
+```bash
+pip install --index-url https://pypi.org/simple -r requirements-dev.txt
+```
+
+ShellCheck y Gitleaks se instalan desde sus releases oficiales de GitHub. Si
+`/tmp` no tiene cuota, exporta `TMPDIR` a una carpeta del proyecto. Los detalles
+y los comandos exactos están en [`docs/TESTING.md`](docs/TESTING.md#6-instalación-de-las-herramientas-de-calidad).
+
 ## Antes de enviar cambios
 
 ```bash

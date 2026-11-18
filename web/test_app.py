@@ -315,13 +315,20 @@ class WebTest(unittest.TestCase):
         status, headers, _ = self.request("GET", "/?token=malo", token=False)
         self.assertEqual(status, 401)
 
-        status, headers, payload = self.request("GET", f"/?token={self.token}", token=False)
+        bootstrap = self.app.bootstrap_token
+        status, headers, payload = self.request("GET", f"/?token={bootstrap}", token=False)
         self.assertEqual(status, 303)
         self.assertEqual(headers.get("Location"), "/")
         cookie = headers.get("Set-Cookie", "")
-        self.assertIn("xrepost_token=", cookie)
+        self.assertIn("xrepost_sid=", cookie)
         self.assertIn("HttpOnly", cookie)
+        self.assertNotIn("xrepost_token=", cookie)
 
+        # El token de arranque es de un solo uso.
+        status, _, _ = self.request("GET", f"/?token={bootstrap}", token=False)
+        self.assertEqual(status, 401)
+
+        # La cookie heredada sigue valiendo solo para lectura.
         status, headers, page = self.request(
             "GET", "/", token=False, headers={"Cookie": f"xrepost_token={self.token}"}
         )
@@ -797,6 +804,7 @@ class WebTest(unittest.TestCase):
         self.assertFalse(by_id["1"]["undoable"])
         self.assertTrue(by_id["2"]["undoable"])
 
+
         status, _, data = self.json_request("POST", "/api/undo", {"mode": "last"})
         self.assertEqual(status, 202)
         self.wait_job(data["id"])
@@ -1017,12 +1025,36 @@ class WebTest(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertIn("CSRF", body["error"])
 
+        # Sin Origin ni Sec-Fetch-Site no se acepta una escritura con cookie,
+        # aunque el token CSRF sea correcto.
         status, _, body = self.json_request(
             "POST",
             "/api/preview",
             self.params(),
             token=False,
             headers={**cookie, "X-CSRF-Token": data["csrf"]},
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("Origin", body["error"])
+
+        status, _, body = self.json_request(
+            "POST",
+            "/api/preview",
+            self.params(),
+            token=False,
+            headers={**cookie, "X-CSRF-Token": data["csrf"], "Sec-Fetch-Site": "cross-site"},
+            origin=f"http://127.0.0.1:{self.port}",
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("Origen", body["error"])
+
+        status, _, body = self.json_request(
+            "POST",
+            "/api/preview",
+            self.params(),
+            token=False,
+            headers={**cookie, "X-CSRF-Token": data["csrf"]},
+            origin=f"http://127.0.0.1:{self.port}",
         )
         self.assertEqual(status, 202, body)
 
@@ -1041,7 +1073,12 @@ class WebTest(unittest.TestCase):
         sid, data = self._session_cookie()
         cookie = {"Cookie": f"xrepost_sid={sid}", "X-CSRF-Token": data["csrf"]}
         status, headers, rotated = self.json_request(
-            "POST", "/api/session/rotate", {}, token=False, headers=cookie
+            "POST",
+            "/api/session/rotate",
+            {},
+            token=False,
+            headers=cookie,
+            origin=f"http://127.0.0.1:{self.port}",
         )
         self.assertEqual(status, 200, rotated)
         self.assertNotEqual(rotated["csrf"], data["csrf"])
@@ -1055,6 +1092,7 @@ class WebTest(unittest.TestCase):
             {},
             token=False,
             headers={"Cookie": f"xrepost_sid={new_sid}", "X-CSRF-Token": rotated["csrf"]},
+            origin=f"http://127.0.0.1:{self.port}",
         )
         self.assertEqual(status, 200, logged)
         self.assertTrue(logged["ok"])
@@ -1194,6 +1232,36 @@ class WebTest(unittest.TestCase):
 
         status, _, after = self.json_request("GET", "/api/inbox")
         self.assertGreaterEqual(after["counts"].get("verified", 0), 1)
+
+    def test_undo_confirmado_actualiza_la_bandeja(self):
+        preview = self.preview()
+        self.assertEqual(preview["status"], "done")
+        _, _, inbox = self.json_request("GET", "/api/inbox")
+        ids = [item["id"] for item in inbox["items"]]
+        self.assertGreaterEqual(len(ids), 2)
+        status, _, _ = self.json_request(
+            "POST", "/api/inbox/decide", {"ids": ids, "status": "approved"}
+        )
+        self.assertEqual(status, 200)
+        status, _, applied = self.json_request("POST", "/api/inbox/apply", {"delay": 0})
+        self.assertEqual(status, 202, applied)
+        self.assertEqual(self.wait_job(applied["id"])["status"], "done")
+
+        _, _, after = self.json_request("GET", "/api/inbox")
+        self.assertGreaterEqual(after["counts"].get("verified", 0), 2)
+
+        status, _, undo = self.json_request(
+            "POST", "/api/undo", {"mode": "url", "url": "https://x.com/foo/status/1"}
+        )
+        self.assertEqual(status, 202, undo)
+        self.assertEqual(self.wait_job(undo["id"])["status"], "done")
+
+        _, _, final = self.json_request("GET", "/api/inbox")
+        estados = {item["id"]: item["status"] for item in final["items"]}
+        self.assertEqual(estados["1"], "undone")
+        self.assertEqual(estados["2"], "verified")
+        self.assertEqual(final["counts"].get("undone"), 1)
+        self.assertEqual(final["counts"].get("verified"), 1)
 
     def test_inbox_rejects_invalid_decision(self):
         status, _, _ = self.json_request("POST", "/api/inbox/decide", {"ids": [], "status": "nope"})

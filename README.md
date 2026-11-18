@@ -4,28 +4,34 @@ Herramienta para **repostear posts de usuarios concretos dentro de un rango de f
 
 No usa la API de X ni pide contraseñas: controla tu navegador real mediante CDP (Chrome DevTools Protocol) a través del harness `browser-use`.
 
-> **Documentación actualizada**: la referencia por audiencias está en [`docs/`](docs/). Empieza por [`docs/INSTALACION.md`](docs/INSTALACION.md), [`docs/USUARIO.md`](docs/USUARIO.md) y [`docs/SEGURIDAD.md`](docs/SEGURIDAD.md). El estado final de la modernización se resume en [`docs/INFORME_FINAL_MODERNIZACION.md`](docs/INFORME_FINAL_MODERNIZACION.md).
+> **Documentación actualizada**: la referencia por audiencias está en [`docs/`](docs/). Empieza por [`docs/INSTALACION.md`](docs/INSTALACION.md), [`docs/USUARIO.md`](docs/USUARIO.md) y [`docs/SEGURIDAD.md`](docs/SEGURIDAD.md). El estado final de la modernización se resume en [`docs/INFORME_FINAL.md`](docs/INFORME_FINAL.md).
 
 ### Documentación detallada
 
 | Documento | Contenido |
 | --- | --- |
-| [Auditoría inicial](docs/AUDITORIA_TECNICA_INICIAL.md) | Estado de partida y hallazgos. |
-| [Seguridad](docs/SEGURIDAD.md) | Autenticación, CSRF, permisos y CDP. |
+| [Estado técnico inicial](docs/ESTADO_TECNICO_INICIAL.md) | Estado de partida, hallazgos y prioridades. |
+| [Seguridad](docs/SEGURIDAD.md) | Controles, cabeceras y modelo de despliegue. |
+| [Autenticación](docs/AUTENTICACION.md) | Token de arranque, sesiones, CSRF y fuerza bruta. |
 | [Modelo de amenazas](docs/MODELO_DE_AMENAZAS.md) | Actores, riesgos y controles. |
+| [Chrome y CDP](docs/CHROME_CDP.md) | Validación del endpoint y perfil dedicado. |
 | [Arquitectura](docs/ARQUITECTURA.md) | Capas, módulos y flujos. |
 | [Instalación](docs/INSTALACION.md) | Requisitos y puesta en marcha. |
 | [Configuración](docs/CONFIGURACION.md) | Variables, rutas y límites. |
+| [Red y proxy](docs/CONFIGURACION_RED.md) | Modos, PAC, validación y persistencia. |
 | [Guía de usuario](docs/USUARIO.md) | Uso del panel paso a paso. |
 | [CLI](docs/CLI.md) | Opciones y ejemplos de `xrepost.sh`. |
 | [API](docs/API.md) | Endpoints, cuerpos y respuestas. |
 | [Motor de X](docs/MOTOR_X.md) | Búsqueda, filtros y verificación. |
 | [Persistencia](docs/PERSISTENCIA.md) | Historial y documentos JSON. |
+| [Gestión de jobs](docs/GESTION_DE_JOBS.md) | Estados, transiciones y cancelación. |
+| [Recuperación](docs/RECUPERACION.md) | Reinicios, backups y resultados inciertos. |
+| [Diagnóstico](docs/DIAGNOSTICO.md) | `--diagnose`, `--strict-cdp` y API. |
 | [Backup y restauración](docs/BACKUP_RESTORE.md) | Copias verificables. |
 | [Desarrollo](docs/DESARROLLO.md) | Convenciones y flujo de trabajo. |
 | [Pruebas](docs/TESTING.md) | Suite, cobertura y límites. |
 | [Changelog técnico](docs/CHANGELOG_TECNICO.md) | Cambios por fase. |
-| [Informe final](docs/INFORME_FINAL_MODERNIZACION.md) | Resultados, criterios de aceptación y deuda pendiente. |
+| [Informe final](docs/INFORME_FINAL.md) | Resultados, criterios de aceptación y deuda pendiente. |
 | [Seguridad del repositorio](SECURITY.md) | Cómo informar de vulnerabilidades y alcance. |
 | [Contribuir](CONTRIBUTING.md) | Entorno, estilo y guardas antes de un cambio. |
 | [Changelog](CHANGELOG.md) | Versiones y cambios visibles. |
@@ -552,7 +558,7 @@ Todo lo siguiente se probó con la cuenta real, dejándola sin cambios (donde se
 18. **Resumen de alcance**: la cabecera de cada ejecución muestra `alcance: solo publicaciones originales | respuestas: omitidas` (o la variante elegida).
 19. **Repost con cita (cuenta real)**: se publicó una cita del post de `@Docker` sobre Docker Sandboxes (28/10/2026) con el comentario `#Docker` desde `@rignack_X`; la ejecución terminó con `citado con comentario`, el historial guardó `quoted` y la cita se verificó en el perfil. Antes, el dry-run con `--quote "#ETECSA"` mostró `comentario de la cita: #ETECSA`, devolvió los 2 posts con fechas DD/MM/AAAA y no publicó nada.
 20. **Autocompletado de hashtags (panel real)**: el campo bajo «Cuentas» sugirió los hashtags usados, excluyó los ya escritos en el mismo campo, aceptó la elección con `↓`/`Enter` y añadió el espacio para el siguiente; `ETECSA, cuba` se normalizó a `#ETECSA #cuba` y un comentario sin hashtags válidos se rechazó con aviso.
-21. **Pruebas automáticas**: 55 pruebas del panel, 15 del motor con la lista exacta, 12 de historial, 10 de red, 8 de hashtags, 7 de cuentas, 5 de arranque y 59 de los módulos nuevos. En conjunto: `python3 -m pytest -q` → **171 pruebas + 18 subpruebas**, con 91 % de cobertura en la lógica de negocio (ver [`docs/TESTING.md`](docs/TESTING.md)).
+21. **Pruebas automáticas**: 56 pruebas del panel, 15 del motor con la lista exacta, 12 de historial, 15 de red, 8 de hashtags, 7 de cuentas, 5 de arranque y 62 de los módulos nuevos. En conjunto: `python3 -m pytest -q` → **180 pruebas + 32 subpruebas**, con 91 % de cobertura en la lógica de negocio (ver [`docs/TESTING.md`](docs/TESTING.md)).
 22. **Mejoras de la interfaz (Chrome headless real, motor simulado)**: se condujo el panel por CDP y se verificaron con capturas — vista previa de la cita con contador 280, error de fecha visible y accesible (`aria-invalid`), casillas por publicación con «Seleccionar todo / nada», conteo y nota de selección, filtro y orden del listado, diálogo de confirmación con conteo real (`3 de 3 seleccionadas (4 revisadas)`) y duración estimada, barra de progreso «X de Y» con estados por fila en vivo y log abierto, resultado final exacto, historial con el comentario de la cita y filtro, formulario recordado tras recarga, **reconexión a un trabajo en curso tras recargar**, deshacer con detalle de la tanda y N opcional (deshizo solo 1 de 3) y tarjetas en vista móvil (390 px).
 
 Capturas de esas pruebas: `~/Downloads/demo-5-x-home.png`, `~/Downloads/demo-6-repost-test.png`.

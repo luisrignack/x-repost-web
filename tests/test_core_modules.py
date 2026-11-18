@@ -234,6 +234,7 @@ class JobsTest(Base):
         created = store.create("a" * 32, "preview", {"users": "@foo", "token": "secreto"})
         self.assertEqual(created["params"]["users"], "@foo")
         self.assertNotIn("token", created["params"])
+        store.update(created["id"], state=xrepost_jobs.RUNNING)
         store.update(created["id"], state=xrepost_jobs.COMPLETED, post_count=3)
         self.assertEqual(store.get(created["id"])["status"], "done")
 
@@ -250,6 +251,32 @@ class JobsTest(Base):
 
         with self.assertRaises(ValueError):
             store.update("b" * 32, state="inventado")
+
+    def test_transiciones_de_trabajo(self):
+        store = xrepost_jobs.JobStore(self.root / "runs2")
+        job = store.create("d" * 32, "preview", {})
+        self.assertEqual(job["state"], xrepost_jobs.QUEUED)
+        # Repetir el estado actual es idempotente.
+        self.assertEqual(store.update(job["id"], state=xrepost_jobs.QUEUED)["state"], xrepost_jobs.QUEUED)
+        with self.assertRaises(xrepost_jobs.JobStateError):
+            store.update(job["id"], state=xrepost_jobs.COMPLETED)
+        with self.assertRaises(xrepost_jobs.JobStateError):
+            store.update(job["id"], state=xrepost_jobs.TIMED_OUT)
+        store.update(job["id"], state=xrepost_jobs.RUNNING)
+        store.update(job["id"], state=xrepost_jobs.FAILED)
+        # Un estado terminal no vuelve a RUNNING ni a COMPLETED.
+        with self.assertRaises(xrepost_jobs.JobStateError):
+            store.update(job["id"], state=xrepost_jobs.RUNNING)
+        with self.assertRaises(xrepost_jobs.JobStateError):
+            store.update(job["id"], state=xrepost_jobs.COMPLETED)
+
+        self.assertTrue(xrepost_jobs.can_transition(None, xrepost_jobs.RUNNING))
+        self.assertTrue(xrepost_jobs.can_transition(xrepost_jobs.QUEUED, xrepost_jobs.QUEUED))
+        self.assertTrue(xrepost_jobs.can_transition(xrepost_jobs.QUEUED, xrepost_jobs.INTERRUPTED))
+        self.assertFalse(xrepost_jobs.can_transition(xrepost_jobs.COMPLETED, xrepost_jobs.FAILED))
+        self.assertFalse(xrepost_jobs.can_transition(xrepost_jobs.QUEUED, "INVENTADO"))
+        with self.assertRaises(xrepost_jobs.JobStateError):
+            xrepost_jobs.require_transition(xrepost_jobs.INTERRUPTED, xrepost_jobs.RUNNING)
 
 
 class ExportsTest(Base):
@@ -360,6 +387,32 @@ class InboxTest(Base):
         self.assertEqual(store.import_items([{"id": "3", "url": "https://x.com/foo/status/3"}]), 1)
         with self.assertRaises(ValueError):
             store.decide(["2"], "inventado")
+
+    def test_undo_pasa_por_estado_intermedio(self):
+        store = xrepost_inbox.InboxStore(self.root / "inbox-undo.json")
+        posts = [
+            {"url": "https://x.com/foo/status/9", "usuario": "@foo", "autor": "Foo", "texto": "nueve", "fecha": "2024-01-01"},
+        ]
+        store.upsert_from_posts(posts, {"users": "@foo"}, "run")
+        store.decide(["9"], xrepost_inbox.APPROVED)
+        store.mark(["9"], xrepost_inbox.QUEUED, "en ejecución")
+        store.mark(["9"], xrepost_inbox.VERIFIED, "confirmado")
+
+        with self.assertRaises(xrepost_state.TransitionError):
+            store.mark(["9"], xrepost_inbox.UNDONE, "sin pasar por UNDO_PENDING")
+        store.mark(["9"], xrepost_inbox.UNDO_PENDING, "deshaciendo")
+        self.assertEqual(store.get("9")["state"], xrepost_state.UNDO_PENDING)
+        store.mark(["9"], xrepost_inbox.UNDONE, "deshecho")
+        self.assertEqual(store.get("9")["state"], xrepost_state.UNDONE)
+        self.assertEqual(store.counts()[xrepost_inbox.UNDONE], 1)
+        self.assertEqual(xrepost_state.state_for("undone"), xrepost_state.UNDONE)
+        # Un estado terminal no vuelve a verificarse.
+        with self.assertRaises(xrepost_state.TransitionError):
+            store.mark(["9"], xrepost_inbox.VERIFIED, "no")
+
+        # La consulta decide tampoco puede revivir un elemento deshecho.
+        store.decide(["9"], xrepost_inbox.PENDING)
+        self.assertEqual(store.get("9")["status"], xrepost_inbox.UNDONE)
 
 
 class ScheduleTest(Base):
@@ -856,6 +909,54 @@ class CdpSecurityTest(Base):
              mock.patch.object(xrepost_cdp, "probe", return_value={"ok": True, "browser": "Chrome", "websocket": "", "problems": []}):
             report = xrepost_cdp.status("http://127.0.0.1:9222", profile=self.root / "perfil")
             self.assertTrue(report["secure"], report["problems"])
+
+    def test_parseo_de_proc_tcp_y_procesos(self):
+        tcp = self.root / "tcp"
+        tcp.write_text(
+            "  sl  local_address rem_address   st\n"
+            "   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000\n"
+            "   1: 0100007F:1F91 00000000:0000 0A 00000000:00000000\n"
+            "   2: 0100007F:1F90 00000000:0000 01 00000000:00000000\n",
+            encoding="ascii",
+        )
+        self.assertEqual(xrepost_cdp._listening_addresses(8080, files=(str(tcp),)), ["127.0.0.1"])
+        self.assertEqual(xrepost_cdp._listening_addresses(9999, files=(str(tcp),)), [])
+        tcp6 = self.root / "tcp6"
+        tcp6.write_text(
+            "  sl  local_address rem_address   st\n"
+            "   0: 00000000000000000000000001000000:1F90 00000000000000000000000000000000:0000 0A\n",
+            encoding="ascii",
+        )
+        self.assertEqual(len(xrepost_cdp._listening_addresses(8080, files=(str(tcp6),))), 1)
+        # Un archivo inexistente no rompe la comprobación.
+        self.assertEqual(xrepost_cdp._listening_addresses(8080, files=(str(self.root / "nada"),)), [])
+
+        profile = self.root / "perfil"
+        proc = self.root / "proc"
+        (proc / "1234").mkdir(parents=True)
+        (proc / "1234" / "cmdline").write_bytes(
+            b"/opt/google/chrome/chrome\0--remote-debugging-port=9222\0--user-data-dir="
+            + str(profile).encode("utf-8")
+            + b"\0"
+        )
+        (proc / "1235").mkdir()
+        (proc / "1235" / "cmdline").write_bytes(
+            b"/opt/google/chrome/chrome\0--remote-debugging-port=9223\0"
+        )
+        (proc / "1236").mkdir()
+        (proc / "1236" / "cmdline").write_bytes(b"/usr/bin/otra\0--remote-debugging-port=9222\0")
+        (proc / "self").mkdir()
+        (proc / "1237").mkdir()
+        (proc / "1237" / "cmdline").mkdir()  # fuerza OSError al leer
+
+        found = xrepost_cdp.chrome_processes(9222, profile, proc_root=proc)
+        self.assertEqual([item["pid"] for item in found], [1234])
+        self.assertTrue(found[0]["profile_ok"])
+        self.assertEqual(found[0]["profile"], str(profile.resolve()))
+        self.assertFalse(
+            xrepost_cdp.chrome_processes(9222, self.root / "perfil-similar", proc_root=proc)[0]["profile_ok"]
+        )
+        self.assertEqual(xrepost_cdp.chrome_processes(9222, proc_root=self.root / "no-proc"), [])
 
     def test_helpers_de_proceso_y_salida(self):
         self.assertIsInstance(xrepost_cdp._listening_addresses(1), list)

@@ -188,5 +188,5 @@ seleccionadas detectan errores reales (nombres indefinidos, sintaxis).
 1. `python3 -m pytest -q`
 2. `bash ./ci.sh`
 3. Revisar `git diff`.
-4. Actualizar `CHANGELOG_TECNICO.md` e `INFORME_FINAL_MODERNIZACION.md`.
+4. Actualizar `CHANGELOG_TECNICO.md` e `INFORME_FINAL.md`.
 5. Commit (sin push) cuando el usuario lo autorice.

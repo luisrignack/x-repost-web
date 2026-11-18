@@ -224,15 +224,15 @@ módulos.
 
 ### Resultado
 
-- **136 pruebas y 18 subpruebas**, todas aprobadas.
+- **180 pruebas y 32 subpruebas**, todas aprobadas.
 - `ci.sh` en verde.
-- Copia portable sincronizada (40 archivos).
+- Copia portable sincronizada (41 archivos).
 
 ## Fase 8 — Documentación
 
 ### Archivos nuevos
 
-- `docs/AUDITORIA_TECNICA_INICIAL.md`
+- `docs/ESTADO_TECNICO_INICIAL.md`
 - `docs/SEGURIDAD.md`
 - `docs/MODELO_DE_AMENAZAS.md`
 - `docs/ARQUITECTURA.md`
@@ -247,7 +247,13 @@ módulos.
 - `docs/DESARROLLO.md`
 - `docs/TESTING.md`
 - `docs/CHANGELOG_TECNICO.md`
-- `docs/INFORME_FINAL_MODERNIZACION.md`
+- `docs/INFORME_FINAL.md`
+- `docs/AUTENTICACION.md`
+- `docs/CHROME_CDP.md`
+- `docs/GESTION_DE_JOBS.md`
+- `docs/RECUPERACION.md`
+- `docs/CONFIGURACION_RED.md`
+- `docs/DIAGNOSTICO.md`
 
 ### Motivo
 
@@ -298,11 +304,27 @@ anterior no había detectado porque solo se había ejecutado el CI local:
 Además se corrigió un token de ejemplo real en `ABRIR_LA_APLICACION.md`, se
 excluyó la copia portable del análisis de Ruff y se añadió `ruff.toml`.
 
+La revisión posterior añadió:
+
+- **Token de arranque de un solo uso**, independiente del maestro. El segundo
+  canje devuelve `401` y la cookie heredada `xrepost_token` deja de emitirse.
+- **Transiciones de estado de trabajos** validadas con `TRANSITIONS` y
+  `JobStateError`; un estado terminal ya no vuelve a `RUNNING`.
+- **Duración y bandera de cancelación** persistidas en el registro del trabajo.
+- **Validación de proxy y bypass** en `xrepost_network.py`, también al
+  recalcular los flags de Chrome.
+- **Cobertura de `xrepost_cdp.py`** elevada al 89 % con pruebas de
+  `/proc/net/tcp`, procesos y perfiles simulados.
+- **Prueba de arranque aislada** de `browser-use` mediante un ejecutable de
+  doble en el `PATH`.
+- **Anotación de cobertura en CI** cuando no se alcanza el umbral, para poder
+  diagnosticar sin acceso a los logs.
+
 ## Cobertura y pruebas
 
-- 171 pruebas + 18 subpruebas.
-- 91 % en los módulos de negocio (umbral de CI: 90 %); 85 % total.
-- 35 pruebas nuevas para `fs`, `filters`, `cdp`, `schedule`, `security`,
+- 180 pruebas + 32 subpruebas.
+- 91 % en los módulos de negocio (umbral de CI: 90 %); 86 % total.
+- 37 pruebas nuevas para `fs`, `filters`, `cdp`, `schedule`, `security`,
   `groups`, `history` y `state`.
 - `bandit -ll`: 0 hallazgos medium/high (12 low de `try/except pass`
   justificados).
@@ -318,4 +340,4 @@ excluyó la copia portable del análisis de Ruff y se añadió `ruff.toml`.
   autorizado.
 - Valorar TLS si el panel dejara de ser local.
 - Interfaz: paginación, copiar enlace, importación de cuentas y navegación
-  lateral (ver `INFORME_FINAL_MODERNIZACION.md`, sección D).
+  lateral (ver `INFORME_FINAL.md`, secciones 16 y 18).

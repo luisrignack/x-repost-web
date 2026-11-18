@@ -96,6 +96,44 @@ class NetworkTest(unittest.TestCase):
         self.assertEqual(lineas[0], "--proxy-server=http://proxy.ejemplo.cu:8080")
         self.assertTrue(lineas[1].startswith("--proxy-bypass-list="))
 
+    def test_proxy_invalido_se_rechaza(self):
+        for proxy in (
+            "http://proxy.ejemplo.cu:8080",
+            "user:pass@proxy.ejemplo.cu:8080",
+            "proxy.ejemplo.cu",
+            "proxy.ejemplo.cu:0",
+            "proxy.ejemplo.cu:70000",
+            "proxy.ejemplo.cu:8080\n--remote-allow-origins=*",
+            "proxy ejemplo.cu:8080",
+        ):
+            with self.subTest(proxy=proxy):
+                with self.assertRaises(ValueError):
+                    net.save_config({"mode": "server", "proxy": proxy})
+
+    def test_bypass_invalido_se_rechaza(self):
+        for bypass in ("-foo", "localhost;rm -rf /", "localhost\n--x", "localhost,,x"):
+            with self.subTest(bypass=bypass):
+                with self.assertRaises(ValueError):
+                    net.save_config(
+                        {"mode": "server", "proxy": "proxy.ejemplo.cu:8080", "bypass": bypass}
+                    )
+
+    def test_pac_invalido_se_rechaza(self):
+        for pac in ("proxy_empresa.pac", str(self.cfg.with_suffix(".txt")), str(self.cfg) + ".pac"):
+            with self.subTest(pac=pac):
+                with self.assertRaises(ValueError):
+                    net.save_config({"mode": "pac", "pac_path": pac})
+
+    def test_flags_revalidan_config_manipulada(self):
+        with self.assertRaises(ValueError):
+            net.chrome_flags({"mode": "server", "proxy": "evil:8080\n--x"})
+        with self.assertRaises(ValueError):
+            net.chrome_flags({"mode": "server", "proxy": "evil:8080", "bypass": "-x"})
+
+    def test_ipv6_valida(self):
+        self.assertEqual(net.validate_proxy("[::1]:8080"), "[::1]:8080")
+        self.assertEqual(net.validate_bypass("localhost, .etecsa.cu,*"), "localhost,.etecsa.cu,*")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -71,6 +71,7 @@ import xrepost_labels  # noqa: E402
 import xrepost_network  # noqa: E402
 import xrepost_schedule  # noqa: E402
 import xrepost_security  # noqa: E402
+import xrepost_state  # noqa: E402
 import xrepost_stats  # noqa: E402
 
 MAX_BODY = 1_000_000
@@ -394,7 +395,7 @@ class Job:
         self.csv_path = self.dir / "posts.csv"
         self.md_path = self.dir / "posts.md"
         self.proc: subprocess.Popen | None = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
     def add(self, line: str) -> None:
         with self.lock:
@@ -403,8 +404,10 @@ class Job:
                 self.lines = self.lines[-MAX_LOG:]
 
     def set_state(self, state: str) -> None:
-        self.state = state
-        self.status = xrepost_jobs.STATUS_FOR_STATE.get(state, self.status)
+        with self.lock:
+            xrepost_jobs.require_transition(self.state, state)
+            self.state = state
+            self.status = xrepost_jobs.STATUS_FOR_STATE.get(state, self.status)
 
     def snapshot(self, tail: int = 500) -> dict:
         with self.lock:
@@ -465,6 +468,11 @@ class App:
         self.auth = xrepost_security.AuthManager(
             token, ttl=SESSION_TTL, idle=SESSION_IDLE
         )
+        # Token de arranque independiente del maestro: se canjea una sola vez
+        # por una cookie de sesión y deja de ser válido inmediatamente.
+        self.bootstrap_token = secrets.token_urlsafe(32)
+        self._bootstrap_used = False
+        self._bootstrap_lock = threading.Lock()
         self.jobs: dict[str, Job] = {}
         self.current: Job | None = None
         self.lock = threading.RLock()
@@ -484,6 +492,18 @@ class App:
         self.job_store.recover()
         self.job_store.prune()
         self._prune_jobs()
+
+    def consume_bootstrap(self, candidate: str) -> bool:
+        """Canjea el token de arranque. Solo funciona la primera vez."""
+        if not candidate:
+            return False
+        with self._bootstrap_lock:
+            if self._bootstrap_used:
+                return False
+            if not hmac.compare_digest(str(candidate), self.bootstrap_token):
+                return False
+            self._bootstrap_used = True
+            return True
 
     # -- autocompletado ------------------------------------------------------
     def suggest_accounts(
@@ -720,9 +740,16 @@ class App:
 
             if job.kind in ("preview", "apply"):
                 self._load_posts(job)
+            if job.kind in ("preview", "apply", "undo"):
+                # El undo también reconcilia la bandeja: si el motor confirmó
+                # el deshacer, las publicaciones pasan a ``undone``.
                 self._sync_inbox(job)
 
-            if job.cancelled:
+            if job.state == xrepost_jobs.TIMED_OUT:
+                # El watchdog ya fijó el estado terminal; no lo degrade a
+                # CANCELLED por la bandera que puso al matar el proceso.
+                pass
+            elif job.cancelled:
                 job.set_state(xrepost_jobs.CANCELLED)
             elif rc == 0:
                 job.set_state(xrepost_jobs.COMPLETED)
@@ -730,11 +757,13 @@ class App:
                 job.set_state(xrepost_jobs.FAILED)
                 job.error = f"El motor terminó con código {rc}."
         except FileNotFoundError as exc:
-            job.set_state(xrepost_jobs.FAILED)
+            if xrepost_jobs.can_transition(job.state, xrepost_jobs.FAILED):
+                job.set_state(xrepost_jobs.FAILED)
             job.error = str(exc)
             job.add(f"Error: {exc}")
         except Exception as exc:  # pragma: no cover - salvaguarda
-            job.set_state(xrepost_jobs.FAILED)
+            if xrepost_jobs.can_transition(job.state, xrepost_jobs.FAILED):
+                job.set_state(xrepost_jobs.FAILED)
             job.error = f"Fallo inesperado: {exc}"
             job.add(job.error)
         finally:
@@ -749,12 +778,60 @@ class App:
                 returncode=job.returncode,
                 error=job.error,
                 post_count=len(job.posts),
+                duration=round(job.ended - job.started, 3),
+                cancelled=job.cancelled,
             )
             if job.proc and job.proc.stdout:
                 try:
                     job.proc.stdout.close()
                 except Exception:
                     pass
+
+    def _reconcile_undo(self, job: Job) -> None:
+        """Marca como deshechas las publicaciones que el undo confirmó.
+
+        El historial no guarda segundos, así que se exige además que el último
+        evento de la publicación sea ese undo. Así no se confunde con un undo
+        anterior seguido de un repost nuevo.
+        """
+        if job.returncode != 0:
+            return
+        # El historial normaliza ``ts`` a minutos UTC sin sufijo de zona
+        # (``2026-11-18T15:08``). Se compara con el mismo formato para que la
+        # comparación lexicográfica sea correcta.
+        start = dt.datetime.fromtimestamp(job.started, dt.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M"
+        )
+        try:
+            entries = xrepost_history.read_events(self.history, max_events=5000)
+        except Exception:  # pragma: no cover - salvaguarda de lectura
+            return
+        latest: dict[str, dict] = {}
+        for event in entries:
+            item_id = str(event.get("id") or "") or xrepost_history.tweet_id(
+                str(event.get("url") or "")
+            )
+            if item_id:
+                latest[item_id] = event
+        undone: list[str] = []
+        for item_id, event in latest.items():
+            if str(event.get("action") or "") != "undo":
+                continue
+            if str(event.get("result") or "") not in ("undone", "not_reposted"):
+                continue
+            if str(event.get("ts") or "") < start:
+                continue
+            item = self.inbox.get(item_id)
+            if not item or item.get("state") != xrepost_state.CONFIRMED:
+                continue
+            undone.append(item_id)
+        if not undone:
+            return
+        try:
+            self.inbox.mark(undone, xrepost_inbox.UNDO_PENDING, "deshaciendo en X")
+            self.inbox.mark(undone, xrepost_inbox.UNDONE, "deshecho y verificado en X")
+        except xrepost_state.TransitionError:  # pragma: no cover - carrera
+            pass
 
     def _validate_engine(self) -> None:
         path = Path(self.engine)
@@ -780,8 +857,12 @@ class App:
 
         Una previsualización añade publicaciones pendientes. Una ejecución
         actualiza el estado de lo aprobado: confirmado → ``verified``, incierto
-        → ``unconfirmed`` (no se reintenta solo) y fallo → ``failed``.
+        → ``unconfirmed`` (no se reintenta solo) y fallo → ``failed``. Un undo
+        confirmado pasa la publicación a ``undone``.
         """
+        if job.kind == "undo":
+            self._reconcile_undo(job)
+            return
         if not job.posts:
             return
         try:
@@ -845,8 +926,15 @@ class App:
         while job.status == "running":
             if time.time() - job.started > MAX_JOB_SECONDS:
                 job.add("Tiempo máximo alcanzado; cancelando la ejecución.")
-                job.cancelled = True
-                job.set_state(xrepost_jobs.TIMED_OUT)
+                with job.lock:
+                    # El proceso pudo terminar entre la comprobación y el
+                    # bloqueo: no se pisa un estado terminal ya fijado.
+                    if job.status != "running":
+                        return
+                    job.cancelled = True
+                    if not xrepost_jobs.can_transition(job.state, xrepost_jobs.TIMED_OUT):
+                        return
+                    job.set_state(xrepost_jobs.TIMED_OUT)
                 self._terminate(job)
                 return
             time.sleep(1)
@@ -1079,6 +1167,8 @@ class Handler(BaseHTTPRequestHandler):
         session = self._session()
         candidate = self.headers.get("X-CSRF-Token", "")
         if kind == "session" and session is not None and self.application.auth.csrf_ok(session, candidate):
+            # Autenticación y origen son comprobaciones independientes.
+            self._require_local_provenance()
             return kind
         raise HttpError(
             403,
@@ -1093,6 +1183,21 @@ class Handler(BaseHTTPRequestHandler):
         return xrepost_security.allowed_origin(
             self.headers.get("Origin", ""), self.headers.get("Host", "")
         )
+
+    def _require_local_provenance(self) -> None:
+        """Escrituras con cookie: mismo origen, nunca desde otra página.
+
+        Los navegadores envían ``Origin`` en todo POST y ``Sec-Fetch-Site``
+        cuando lo soportan. Un cliente local con ``X-Token`` queda exento (su
+        cabecera personalizada no se puede enviar sin preflight CORS).
+        """
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site and site not in ("same-origin", "none"):
+            raise HttpError(403, "Origen no permitido.")
+        if not self.headers.get("Origin") and not site:
+            raise HttpError(
+                403, "Falta Origin en una petición de escritura con cookie."
+            )
 
     # --- utilidades HTTP ---------------------------------------------------
     def _security_headers(self) -> None:
@@ -1233,6 +1338,10 @@ a{{color:#38BDF8}}</style>
             if not self._origin_ok():
                 self.close_connection = True
                 raise HttpError(403, "Origen no permitido.")
+            site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            if site and site not in ("same-origin", "none"):
+                self.close_connection = True
+                raise HttpError(403, "Origen no permitido.")
             if not self._auth_kind():
                 # Si se rechaza antes de leer el cuerpo, la conexión no puede
                 # reutilizarse: los bytes pendientes se interpretarían como
@@ -1269,9 +1378,9 @@ a{{color:#38BDF8}}</style>
             wait = self.application.auth.blocked_for(client)
             if wait:
                 raise HttpError(429, f"Demasiados intentos fallidos. Espera {wait} s.", retry_after=wait)
-            if not self.application.auth.master_ok(token):
+            if not self.application.consume_bootstrap(token):
                 self.application.auth.register_failure(client)
-                raise HttpError(401, "Enlace no válido.")
+                raise HttpError(401, "Enlace no válido o ya utilizado.")
             self.application.auth.register_success(client)
             session = self.application.auth.create(
                 client=client, user_agent=self.headers.get("User-Agent", "")
@@ -1280,13 +1389,6 @@ a{{color:#38BDF8}}</style>
             self.send_header(
                 "Set-Cookie",
                 xrepost_security.cookie_header(session.sid, max_age=SESSION_TTL),
-            )
-            # Compatibilidad con clientes/versiones anteriores: cookie maestra
-            # HttpOnly. Las escrituras con esta cookie exigen X-Token o sesión.
-            self.send_header(
-                "Set-Cookie",
-                f"xrepost_token={self.application.token}; Path=/; Max-Age={SESSION_TTL}; "
-                "HttpOnly; SameSite=Strict",
             )
             self.send_header("Location", "/")
             self.send_header("Content-Length", "0")
@@ -2095,7 +2197,7 @@ def main(argv: list[str] | None = None) -> int:
         app.start_scheduler()
 
     port = httpd.server_address[1]
-    url = f"http://127.0.0.1:{port}/?token={token}"
+    url = f"http://127.0.0.1:{port}/?token={app.bootstrap_token}"
     shown = url
     if args.bootstrap_file:
         xrepost_fs.atomic_write(Path(args.bootstrap_file).expanduser(), url + "\n")

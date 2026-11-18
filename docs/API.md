@@ -7,8 +7,9 @@ recursos estáticos y las descargas.
 
 ### Sesión de navegador
 
-1. `GET /?token=<token>` valida el token y responde `303` con
-   `Set-Cookie: xrepost_sid=…`.
+1. `GET /?token=<token>` valida el **token de arranque** (de un solo uso) y
+   responde `303` con `Set-Cookie: xrepost_sid=…`. Reutilizarlo devuelve `401`.
+   El token maestro no se acepta en la URL.
 2. `GET /api/session` devuelve el token CSRF.
 3. Cada escritura envía `X-CSRF-Token`.
 

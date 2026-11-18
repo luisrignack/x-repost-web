@@ -1720,12 +1720,14 @@ function inboxStatusLabel(status) {
       verified: "verificada",
       unconfirmed: "sin confirmar",
       failed: "fallida",
+      undo_pending: "deshaciendo",
+      undone: "deshecha",
     }[status] || status || "—"
   );
 }
 
 function inboxStatusClass(status) {
-  if (status === "approved" || status === "verified") return "ok";
+  if (status === "approved" || status === "verified" || status === "undone") return "ok";
   if (status === "rejected" || status === "failed") return "bad";
   if (status === "unconfirmed") return "warn";
   if (status === "queued" || status === "executed") return "info";
@@ -1740,7 +1742,10 @@ function updateInboxBadge() {
 
 function renderInboxCounts() {
   const counts = state.inboxCounts || {};
-  const parts = ["pending", "approved", "rejected", "queued", "executed", "verified", "unconfirmed", "failed"]
+  const parts = [
+    "pending", "approved", "rejected", "queued", "executed",
+    "verified", "unconfirmed", "failed", "undo_pending", "undone",
+  ]
     .filter((key) => Number(counts[key] || 0) > 0)
     .map((key) => `${counts[key]} ${inboxStatusLabel(key)}`);
   els.inboxCounts.textContent = parts.length ? parts.join(" · ") : "Sin elementos";

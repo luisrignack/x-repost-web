@@ -16,10 +16,13 @@ El panel escucha en `127.0.0.1` y usa dos credenciales distintas:
 
 ### Flujo del navegador
 
-1. `iniciar.sh` genera el token (o lo reutiliza de `panel-token`, 0600) y
-   escribe un enlace de arranque en `panel-url` (0600).
-2. Al abrir `http://127.0.0.1:8765/?token=…`, el servidor valida el token,
-   crea una sesión y responde `303` con la cookie `xrepost_sid`.
+1. `iniciar.sh` genera el token maestro (o lo reutiliza de `panel-token`,
+   0600). El panel genera además un **token de arranque** independiente y
+   escribe la URL en `panel-url` (0600).
+2. Al abrir `http://127.0.0.1:8765/?token=…`, el servidor consume ese token de
+   arranque (un solo uso), crea una sesión y responde `303` con la cookie
+   `xrepost_sid`. El token maestro nunca viaja en la URL y reutilizar el enlace
+   devuelve `401`.
 3. El token desaparece de la barra de direcciones. La cookie **no** sirve para
    escribir por sí sola: `app.js` pide `GET /api/session`, guarda el CSRF en
    memoria y lo envía en cada `POST`, `PATCH` o `DELETE`.
@@ -33,10 +36,11 @@ aceptan esta forma.
 
 ### Cookie heredada
 
-La cookie `xrepost_token` se mantiene solo por compatibilidad de lectura. Una
-petición autenticada únicamente por esa cookie **no puede escribir**: debe
-enviar `X-Token` o disponer de una sesión con CSRF. Está previsto retirarla en
-una versión futura.
+La cookie `xrepost_token` **ya no se emite** al canjear el enlace de arranque.
+Si un cliente antiguo la conserva, se acepta solo para lectura: una petición
+autenticada únicamente por esa cookie **no puede escribir** y debe enviar
+`X-Token` o disponer de una sesión con CSRF. Está previsto retirar también su
+aceptación en una versión futura.
 
 ## 2. CSRF y validación de origen
 
@@ -45,11 +49,13 @@ Cada escritura pasa por este orden:
 1. `Host` debe ser `127.0.0.1`, `localhost` o `::1`, y el puerto debe coincidir
    con el del servidor.
 2. `Origin`, si está presente, debe coincidir exactamente con el `Host`
-   (esquema `http`, mismo host y puerto, sin credenciales).
+   (esquema `http`, mismo host y puerto, sin credenciales) y `Sec-Fetch-Site`
+   no puede ser `cross-site` ni `same-site`.
 3. Se resuelve el tipo de autenticación: `header` (`X-Token`), `session`
    (cookie válida) o `cookie` (heredada, solo lectura).
 4. Con `session`, `X-CSRF-Token` debe coincidir con el de la sesión mediante
-   `hmac.compare_digest`.
+   `hmac.compare_digest`; además una escritura con cookie exige `Origin` o
+   `Sec-Fetch-Site` (su ausencia solo se tolera a clientes con `X-Token`).
 5. Solo entonces se lee el cuerpo JSON (máximo 1 MB, `application/json`
    obligatorio).
 
@@ -190,6 +196,9 @@ Comprobaciones manuales recomendadas:
 - Intentar un `POST` con cookie pero sin `X-CSRF-Token`: debe devolver 403.
 - Enviar `Origin: http://evil.example`: debe devolver 403.
 - Enviar `Host: evil.example`: debe devolver 403.
+- Escritura con cookie válida y CSRF correcto pero sin `Origin` ni
+  `Sec-Fetch-Site`: debe devolver 403.
+- Escritura con `Sec-Fetch-Site: cross-site`: debe devolver 403.
 - Ejecutar `xrepost.sh --strict-cdp` con un CDP remoto: debe rechazarlo.
 
 ## 12. Escaneo de secretos y dependencias

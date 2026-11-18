@@ -6,6 +6,11 @@ panel-url.txt
 .qwen/
 .freebuff/
 
+# Entorno local de herramientas de calidad (ver docs/TESTING.md)
+.toolenv/
+.piptmp/
+.pipcache/
+
 # Artefactos de ejecución y pruebas
 web/.runs/
 .coverage

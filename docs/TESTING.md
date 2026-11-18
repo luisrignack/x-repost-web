@@ -5,30 +5,30 @@
 | Métrica | Valor |
 | --- | --- |
 | Marco | `unittest` ejecutado con `pytest` |
-| Pruebas recopiladas | **171** |
-| Subpruebas | **18** |
-| Resultado local | **171 passed, 18 subtests passed** |
+| Pruebas recopiladas | **180** |
+| Subpruebas | **32** |
+| Resultado local | **180 passed, 32 subtests passed** |
 | Cobertura (módulos de negocio) | **91 %** |
-| Cobertura total (incluye CLI y panel) | **85 %** |
+| Cobertura total (incluye CLI y panel) | **86 %** |
 | Python | 3.14.4 |
-| Duración aproximada | 39 s |
+| Duración aproximada | 45 s |
 | Navegador necesario | No |
 | Credenciales necesarias | No |
 
 ```bash
 python3 -m pytest -q
-# 171 passed, 18 subtests passed
+# 180 passed, 32 subtests passed
 ```
 
 ## 2. Distribución
 
 | Archivo | Pruebas | Ámbito |
 | --- | --- | --- |
-| `tests/test_core_modules.py` | 59 | Sistema de archivos, almacén JSON, seguridad, CDP, filtros, trabajos, exportaciones, grupos, bandeja, programación, estadísticas, historial y máquina de estados. |
-| `web/test_app.py` | 55 | Contrato HTTP del panel: auth, CSRF, trabajos, perfiles, grupos, bandeja, programación, estadísticas, backups, exportaciones y UI. |
+| `tests/test_core_modules.py` | 62 | Sistema de archivos, almacén JSON, seguridad, CDP, filtros, trabajos, exportaciones, grupos, bandeja, programación, estadísticas, historial y máquina de estados. |
+| `web/test_app.py` | 56 | Contrato HTTP del panel: auth, CSRF, trabajos, perfiles, grupos, bandeja, programación, estadísticas, backups, exportaciones y UI. |
 | `web/test_engine_selected.py` | 15 | Sondas y selectores del motor sin abrir Chrome. |
 | `tests/test_history.py` | 12 | Estado compartido del historial. |
-| `tests/test_network.py` | 10 | Preferencias de red y flags de Chrome. |
+| `tests/test_network.py` | 15 | Preferencias de red y flags de Chrome. |
 | `tests/test_hashtags.py` | 8 | Normalización y sugerencias de hashtags. |
 | `tests/test_accounts.py` | 7 | Cuentas recordadas y sugerencias. |
 | `tests/test_start_script.py` | 5 | Arranque y comprobaciones de `iniciar.sh`. |
@@ -47,6 +47,8 @@ python3 -m pytest -q
 - CSRF obligatorio en escrituras del panel.
 - Rotación de sesión y logout.
 - Rechazo de `Origin` externo.
+- Escritura con cookie sin `Origin` ni `Sec-Fetch-Site` rechazada.
+- `Sec-Fetch-Site: cross-site` rechazado aunque el CSRF sea correcto.
 
 ### 3.2 Sistema de archivos
 
@@ -107,23 +109,52 @@ python -m coverage report \
 | `xrepost_security.py` | 96 % |
 | `xrepost_groups.py` | 95 % |
 | `xrepost_filters.py` | 94 % |
-| `xrepost_history.py` | 94 % |
+| `xrepost_history.py` | 95 % |
 | `xrepost_state.py` | 94 % |
 | `xrepost_store.py` | 90 % |
 | `xrepost_exports.py` | 89 % |
-| `xrepost_jobs.py` | 87 % |
-| `xrepost_inbox.py` | 86 % |
-| `xrepost_cdp.py` | 85 % |
+| `xrepost_jobs.py` | 89 % |
+| `xrepost_inbox.py` | 88 % |
+| `xrepost_cdp.py` | 89 % |
 | `xrepost_fs.py` | 83 % |
 | `xrepost_stats.py` | 82 % |
 | **Total de negocio** | **91 %** |
-| **Total del proyecto** | **85 %** |
+| **Total del proyecto** | **86 %** |
 
 CI exige `--fail-under=90` para ese conjunto. La cobertura total es menor por
 `xrepost_accounts.py` (CLI interactivo) y `web/app.py`; sus caminos críticos
-están cubiertos por `web/test_app.py` (55 pruebas).
+están cubiertos por `web/test_app.py` (56 pruebas).
 
-## 6. Pruebas del panel con motor doble
+## 6. Instalación de las herramientas de calidad
+
+**Regla de oro:** si el índice interno `nexus.etecsa.cu` no responde o agota el
+tiempo, se reintenta **directamente contra internet**, sin dar la comprobación
+por imposible:
+
+```bash
+python3 -m venv .toolenv
+TMPDIR="$PWD/.piptmp" PIP_CACHE_DIR="$PWD/.pipcache" \
+  .toolenv/bin/pip install --no-cache-dir --index-url https://pypi.org/simple \
+  ruff==0.17.5 bandit==1.9.4 pip-audit==2.10.1 coverage==7.17.3 pytest==9.2.0
+```
+
+- Si `/tmp` está lleno (error `[Errno 122] Disk quota exceeded`), usa
+  `TMPDIR` dentro del proyecto como en el ejemplo.
+- ShellCheck y Gitleaks se descargan de sus releases oficiales de GitHub:
+  `shellcheck-v0.10.0.linux.x86_64.tar.xz` y `gitleaks_<versión>_linux_x64.tar.gz`.
+- `.toolenv/`, `.piptmp/` y `.pipcache/` están ignorados por git.
+
+Comandos verificados (mismos que el CI):
+
+```bash
+.toolenv/bin/ruff check --select E9,F63,F7,F82 .
+.toolenv/bin/shellcheck -S error xrepost.sh iniciar.sh web/run.sh ci.sh sync_portable.sh xrepost-chrome.sh
+.toolenv/bin/bandit -q -r . -x ./xrepost-portable,./tests,./web/test_app.py,./web/test_engine_selected.py -ll
+.toolenv/bin/pip-audit -r requirements.txt --no-deps --disable-pip
+.toolenv/bin/gitleaks detect --source . --no-git --redact --verbose
+```
+
+## 7. Pruebas del panel con motor doble
 
 `web/test_app.py` define `STUB`, un script Python que imita la salida del
 motor sin abrir Chrome. El servidor lo ejecuta como si fuera `xrepost.sh`.
@@ -137,7 +168,7 @@ Esto permite probar:
 
 El stub nunca publica nada.
 
-## 7. Pruebas de la interfaz
+## 8. Pruebas de la interfaz
 
 Se comprueba que:
 
@@ -154,7 +185,7 @@ La validación de sintaxis:
 node --check web/static/app.js
 ```
 
-## 8. Pruebas del CLI
+## 9. Pruebas del CLI
 
 `tests/test_start_script.py` y `web/test_engine_selected.py` verifican:
 
@@ -164,7 +195,7 @@ node --check web/static/app.js
 - Los modos `undo`, `undo_last` y `history` se reconocen.
 - Los selectores contienen alternativas en español e inglés.
 
-## 9. Ejecución selectiva
+## 10. Ejecución selectiva
 
 ```bash
 python3 -m pytest -q tests/test_core_modules.py
@@ -173,7 +204,7 @@ python3 -m pytest -q -k "backup or restore"
 python3 -m pytest -q --maxfail=1
 ```
 
-## 10. CI
+## 11. CI
 
 `ci.sh`:
 
@@ -198,7 +229,7 @@ node --check web/static/app.js
 - SBOM CycloneDX, paquete `tar.gz`, `SHA256SUMS` y artefactos.
 - La suite completa de `ci.sh`.
 
-## 11. Criterios para añadir una prueba
+## 12. Criterios para añadir una prueba
 
 1. Debe fallar sin el cambio y pasar con él.
 2. No debe depender del orden de ejecución.
@@ -207,7 +238,7 @@ node --check web/static/app.js
 5. No debe publicar en X.
 6. Debe probar el camino de error relevante, no solo el feliz.
 
-## 12. Limitaciones
+## 13. Limitaciones
 
 - No hay pruebas end-to-end contra X por las restricciones de la tarea.
 - La cobertura no se midió localmente.

@@ -72,6 +72,8 @@ STATUS_TO_STATE = {
     "verified": CONFIRMED,
     "unconfirmed": UNCONFIRMED,
     "failed": FAILED,
+    "undo_pending": UNDO_PENDING,
+    "undone": UNDONE,
 }
 
 

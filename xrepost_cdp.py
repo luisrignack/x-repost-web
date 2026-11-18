@@ -155,10 +155,12 @@ def probe(endpoint: Endpoint, timeout: float = 1.5) -> dict:
     return result
 
 
-def _listening_addresses(port: int) -> list[str]:
+def _listening_addresses(
+    port: int, *, files: tuple[str, ...] = ("/proc/net/tcp", "/proc/net/tcp6")
+) -> list[str]:
     """Direcciones locales en escucha para el puerto (de /proc/net/tcp*)."""
     found: list[str] = []
-    for name in ("/proc/net/tcp", "/proc/net/tcp6"):
+    for name in files:
         try:
             with open(name, encoding="ascii", errors="replace") as fh:
                 next(fh, None)
@@ -188,11 +190,13 @@ def _listening_addresses(port: int) -> list[str]:
     return sorted(set(found))
 
 
-def chrome_processes(port: int, profile: Path | None = None) -> list[dict]:
+def chrome_processes(
+    port: int, profile: Path | None = None, *, proc_root: Path | None = None
+) -> list[dict]:
     """Procesos Chrome que usan el puerto CDP (y, si se indica, el perfil)."""
     wanted_profile = profile.resolve() if profile else None
     out: list[dict] = []
-    proc = Path("/proc")
+    proc = proc_root or Path("/proc")
     if not proc.exists():
         return out
     try:
