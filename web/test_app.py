@@ -995,5 +995,348 @@ class WebTest(unittest.TestCase):
         self.assertEqual(len(self.app.jobs), MAX_JOBS + 2)
 
 
+    # --- sesión, CSRF y UI ---------------------------------------------
+
+    def _session_cookie(self):
+        status, headers, data = self.json_request("GET", "/api/session")
+        self.assertEqual(status, 200, data)
+        cookie = headers.get("Set-Cookie", "")
+        self.assertIn("xrepost_sid=", cookie)
+        sid = cookie.split("xrepost_sid=", 1)[1].split(";", 1)[0]
+        return sid, data
+
+    def test_session_cookie_writes_require_csrf(self):
+        sid, data = self._session_cookie()
+        self.assertTrue(data["authenticated"])
+        self.assertTrue(data["csrf"])
+        cookie = {"Cookie": f"xrepost_sid={sid}"}
+
+        status, _, body = self.json_request(
+            "POST", "/api/preview", self.params(), token=False, headers=cookie
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("CSRF", body["error"])
+
+        status, _, body = self.json_request(
+            "POST",
+            "/api/preview",
+            self.params(),
+            token=False,
+            headers={**cookie, "X-CSRF-Token": data["csrf"]},
+        )
+        self.assertEqual(status, 202, body)
+
+    def test_legacy_cookie_cannot_write_without_csrf(self):
+        status, _, body = self.json_request(
+            "POST",
+            "/api/preview",
+            self.params(),
+            token=False,
+            headers={"Cookie": f"xrepost_token={self.token}"},
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("CSRF", body["error"])
+
+    def test_session_rotate_and_logout(self):
+        sid, data = self._session_cookie()
+        cookie = {"Cookie": f"xrepost_sid={sid}", "X-CSRF-Token": data["csrf"]}
+        status, headers, rotated = self.json_request(
+            "POST", "/api/session/rotate", {}, token=False, headers=cookie
+        )
+        self.assertEqual(status, 200, rotated)
+        self.assertNotEqual(rotated["csrf"], data["csrf"])
+        new_cookie = headers.get("Set-Cookie", "")
+        self.assertIn("xrepost_sid=", new_cookie)
+        new_sid = new_cookie.split("xrepost_sid=", 1)[1].split(";", 1)[0]
+
+        status, _, logged = self.json_request(
+            "POST",
+            "/api/session/logout",
+            {},
+            token=False,
+            headers={"Cookie": f"xrepost_sid={new_sid}", "X-CSRF-Token": rotated["csrf"]},
+        )
+        self.assertEqual(status, 200, logged)
+        self.assertTrue(logged["ok"])
+        status, _, _ = self.json_request(
+            "GET", "/api/health", token=False, headers={"Cookie": f"xrepost_sid={new_sid}"}
+        )
+        self.assertEqual(status, 401)
+
+    def test_ui_exposes_tabs_and_sends_csrf(self):
+        status, _, page = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        html = page.decode("utf-8")
+        self.assertIn('role="tablist"', html)
+        self.assertIn('id="panel-inbox"', html)
+        self.assertIn('id="panel-stats"', html)
+        self.assertIn("skip-link", html)
+
+        status, _, script = self.request("GET", "/static/app.js")
+        self.assertEqual(status, 200)
+        js = script.decode("utf-8")
+        self.assertIn("X-CSRF-Token", js)
+        self.assertIn("/api/session", js)
+        self.assertNotIn("localStorage.setItem(\"xrepost.token", js)
+
+        status, _, css = self.request("GET", "/static/styles.css")
+        self.assertEqual(status, 200)
+        sheet = css.decode("utf-8")
+        self.assertIn("[data-theme=\"light\"]", sheet)
+        self.assertIn("prefers-reduced-motion", sheet)
+        self.assertIn("@media (max-width: 720px)", sheet)
+
+    def test_accounts_all_includes_meta_and_activity(self):
+        self.preview()
+        status, _, data = self.json_request("POST", "/api/accounts/meta", {
+            "handle": "foo", "alias": "Medio", "favorite": True,
+        })
+        self.assertEqual(status, 200, data)
+        status, _, listing = self.json_request("GET", "/api/accounts/all")
+        self.assertEqual(status, 200, listing)
+        foo = next(item for item in listing["accounts"] if item["handle"] == "foo")
+        self.assertEqual(foo["alias"], "Medio")
+        self.assertTrue(foo["favorite"])
+
+    def test_groups_crud_members_and_export(self):
+        status, _, created = self.json_request("POST", "/api/groups", {
+            "name": "Medios", "description": "prueba", "members": ["@foo", "bar"],
+        })
+        self.assertEqual(status, 201, created)
+        group = created["group"]
+        self.assertEqual([m["handle"] for m in group["members"]], ["foo", "bar"])
+
+        status, _, listing = self.json_request("GET", "/api/groups")
+        self.assertEqual(status, 200, listing)
+        self.assertEqual(listing["counts"][group["id"]], 2)
+
+        status, _, added = self.json_request(
+            "POST", f"/api/groups/{group['id']}/members", {"handles": ["baz"]}
+        )
+        self.assertEqual(status, 200, added)
+        self.assertIn("baz", [m["handle"] for m in added["group"]["members"]])
+
+        status, _, removed = self.json_request(
+            "POST", f"/api/groups/{group['id']}/members",
+            {"handles": ["baz"], "action": "remove"},
+        )
+        self.assertEqual(status, 200, removed)
+        self.assertNotIn("baz", [m["handle"] for m in removed["group"]["members"]])
+
+        status, headers, body = self.request("GET", f"/api/groups/{group['id']}/export")
+        self.assertEqual(status, 200)
+        self.assertIn("text/csv", headers.get("Content-Type", ""))
+        self.assertIn(b"foo", body)
+
+        status, _, deleted = self.json_request(
+            "POST", f"/api/groups/{group['id']}/delete", {}
+        )
+        self.assertEqual(status, 200, deleted)
+        self.assertTrue(deleted["deleted"])
+
+    def test_profiles_crud_validation_and_run(self):
+        status, _, invalid = self.json_request(
+            "POST", "/api/filters/validate", {"filters": {"regex": "("}}
+        )
+        self.assertEqual(status, 400, invalid)
+
+        status, _, ok = self.json_request(
+            "POST", "/api/filters/validate", {"filters": {"include": ["cuba"]}}
+        )
+        self.assertEqual(status, 200, ok)
+        self.assertIn("X_MATCH", ok["env"])
+
+        status, _, created = self.json_request("POST", "/api/profiles", {
+            "name": "Solo Cuba", "filters": {"include": "cuba", "lang": "es"},
+        })
+        self.assertEqual(status, 201, created)
+        profile = created["profile"]
+        self.assertEqual(profile["name"], "Solo Cuba")
+
+        status, _, duplicated = self.json_request(
+            "POST", f"/api/profiles/{profile['id']}/duplicate", {"name": "Copia"}
+        )
+        self.assertEqual(status, 200, duplicated)
+        self.assertEqual(duplicated["profile"]["name"], "Copia")
+
+        preview = self.preview(profile_id=profile["id"])
+        self.assertEqual(preview["status"], "done")
+        self.assertEqual(preview["params"]["filters"]["include"], ["cuba"])
+
+        status, _, deleted = self.json_request(
+            "POST", f"/api/profiles/{profile['id']}", {}
+        )
+        self.assertEqual(status, 200, deleted)
+
+    def test_inbox_flow_approve_and_apply(self):
+        preview = self.preview()
+        self.assertEqual(preview["status"], "done")
+
+        status, _, inbox = self.json_request("GET", "/api/inbox")
+        self.assertEqual(status, 200, inbox)
+        self.assertGreaterEqual(inbox["counts"].get("pending", 0), 2)
+        ids = [item["id"] for item in inbox["items"]]
+        self.assertEqual(len(ids), 2)
+
+        status, _, decided = self.json_request(
+            "POST", "/api/inbox/decide", {"ids": ids[:1], "status": "approved"}
+        )
+        self.assertEqual(status, 200, decided)
+        self.assertEqual(decided["changed"], 1)
+
+        status, _, applied = self.json_request(
+            "POST", "/api/inbox/apply", {"delay": 0}
+        )
+        self.assertEqual(status, 202, applied)
+        job = self.wait_job(applied["id"])
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["kind"], "apply")
+
+        status, _, after = self.json_request("GET", "/api/inbox")
+        self.assertGreaterEqual(after["counts"].get("verified", 0), 1)
+
+    def test_inbox_rejects_invalid_decision(self):
+        status, _, _ = self.json_request("POST", "/api/inbox/decide", {"ids": [], "status": "nope"})
+        self.assertEqual(status, 400)
+        status, _, _ = self.json_request("POST", "/api/inbox/apply", {})
+        self.assertEqual(status, 400)
+
+    def test_inbox_import_validates_shape(self):
+        status, _, _ = self.json_request("POST", "/api/inbox/import", {"items": "x"})
+        self.assertEqual(status, 400)
+        status, _, imported = self.json_request("POST", "/api/inbox/import", {
+            "items": [{
+                "id": "9",
+                "url": "https://x.com/foo/status/9",
+                "handle": "foo",
+                "author": "Foo",
+                "text": "hola",
+            }],
+        })
+        self.assertEqual(status, 200, imported)
+        self.assertEqual(imported["imported"], 1)
+
+    def test_schedules_crud_and_preview_only(self):
+        run_at = "2099-01-01T10:00:00+00:00"
+        status, _, created = self.json_request("POST", "/api/schedules", {
+            "name": "Diario",
+            "params": self.params(),
+            "frequency": "daily",
+            "run_at": run_at,
+            "enabled": True,
+            "notify": True,
+        })
+        self.assertEqual(status, 201, created)
+        item = created["schedule"]
+        self.assertEqual(item["frequency"], "daily")
+
+        status, _, listing = self.json_request("GET", "/api/schedules")
+        self.assertEqual(status, 200, listing)
+        self.assertEqual(len(listing["schedules"]), 1)
+
+        status, _, updated = self.json_request(
+            "POST", f"/api/schedules/{item['id']}", {"enabled": False}
+        )
+        self.assertEqual(status, 200, updated)
+        self.assertFalse(updated["schedule"]["enabled"])
+
+        status, _, started = self.json_request(
+            "POST", f"/api/schedules/{item['id']}/run", {}
+        )
+        self.assertEqual(status, 202, started)
+        job = self.wait_job(started["id"])
+        self.assertEqual(job["kind"], "preview")
+
+        status, _, deleted = self.json_request(
+            "POST", f"/api/schedules/{item['id']}/delete", {}
+        )
+        self.assertEqual(status, 200, deleted)
+
+    def test_schedule_rejects_invalid_frequency(self):
+        status, _, body = self.json_request("POST", "/api/schedules", {
+            "name": "Mala",
+            "params": self.params(),
+            "frequency": "hourly",
+            "run_at": "2099-01-01T10:00:00+00:00",
+        })
+        self.assertEqual(status, 400, body)
+
+    def test_stats_diagnostics_and_jobs_list(self):
+        self.preview()
+        status, _, stats = self.json_request("GET", "/api/stats?days=30")
+        self.assertEqual(status, 200, stats)
+        self.assertIn("confirmation_rate", stats)
+        self.assertIn("by_account", stats)
+        self.assertEqual(stats["jobs"]["previews"], 1)
+
+        status, _, diag = self.json_request("GET", "/api/diagnostics")
+        self.assertEqual(status, 200, diag)
+        self.assertTrue(diag["engine"]["exists"])
+        self.assertIn("cdp", diag)
+        self.assertIn("history", diag)
+
+        status, _, jobs = self.json_request("GET", "/api/jobs")
+        self.assertEqual(status, 200, jobs)
+        self.assertGreaterEqual(len(jobs["jobs"]), 1)
+        self.assertTrue(all("state" in item for item in jobs["jobs"]))
+
+        status, _, cdp = self.json_request("GET", "/api/cdp")
+        self.assertEqual(status, 200, cdp)
+        self.assertIn("secure", cdp)
+
+    def test_backup_list_and_restore(self):
+        self.apply(self.preview())
+        status, _, backup = self.json_request("POST", "/api/backup", {"mode": "history"})
+        self.assertEqual(status, 200, backup)
+        self.assertTrue(backup["backup"]["path"])
+
+        status, _, listing = self.json_request("GET", "/api/backups")
+        self.assertEqual(status, 200, listing)
+        self.assertGreaterEqual(len(listing["backups"]), 1)
+        backup_path = listing["backups"][0]["path"]
+
+        status, _, restored = self.json_request(
+            "POST", "/api/restore", {"path": backup_path, "force": False}
+        )
+        self.assertEqual(status, 200, restored)
+        self.assertTrue(restored["restore"])
+
+        status, _, missing = self.json_request(
+            "POST", "/api/restore", {"path": str(self.root / "no-existe.jsonl")}
+        )
+        self.assertEqual(status, 400)
+
+    def test_export_endpoint_formats(self):
+        rows = [{
+            "fecha": "2024-01-01",
+            "autor": "Autor",
+            "usuario": "@foo",
+            "texto": "=HYPERLINK(\"http://evil\")",
+            "url": "https://x.com/foo/status/1",
+            "estado": "reposteado",
+        }]
+        for fmt, marker in (("csv", "text/csv"), ("json", "application/json")):
+            status, headers, body = self.request(
+                "POST", "/api/export", {"format": fmt, "rows": rows}
+            )
+            self.assertEqual(status, 200)
+            self.assertIn(marker, headers.get("Content-Type", ""))
+            text = body.decode("utf-8")
+            self.assertNotIn(",=HYPERLINK", text)
+            self.assertIn("'=HYPERLINK", text) if fmt == "csv" else None
+
+        status, _, invalid = self.json_request(
+            "POST", "/api/export", {"format": "csv", "rows": "x"}
+        )
+        self.assertEqual(status, 400, invalid)
+
+    def test_history_diagnostic_endpoint(self):
+        self.preview()
+        status, _, diag = self.json_request("GET", "/api/history/diagnostic")
+        self.assertEqual(status, 200, diag)
+        self.assertIn("total_events", diag)
+        self.assertIn("corrupt_events", diag)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

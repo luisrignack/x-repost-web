@@ -3,8 +3,20 @@
 xrepost web — panel local para el motor xrepost.
 
 No sustituye al CLI: lo invoca como subproceso. El servidor escucha solo en
-127.0.0.1, exige un token y permite una ejecución a la vez (Chrome es una sola
-sesión). Pensado para uso personal, sin exponerlo a la red.
+127.0.0.1, exige autenticación con sesión + CSRF y permite una ejecución a la
+vez (Chrome es una sola sesión). Pensado para uso personal, sin exponerlo a la
+red.
+
+Capas de seguridad (ver docs/SEGURIDAD.md):
+
+* ``Host`` y ``Origin`` se comparan de forma exacta contra el servidor local.
+* El token maestro solo sirve para crear una sesión (``/?token=…``); a partir
+  de ahí la cookie de sesión es ``HttpOnly`` + ``SameSite=Strict`` y cada
+  escritura exige la cabecera ``X-CSRF-Token``.
+* Los clientes de línea de comandos pueden seguir usando ``X-Token``: una
+  cabecera personalizada no es falsificable desde otro origen.
+* Los subprocesos se lanzan sin shell, con un entorno mínimo y un grupo de
+  procesos propio para poder cancelarlos.
 """
 
 from __future__ import annotations
@@ -46,15 +58,27 @@ CHROME_LAUNCHER = ROOT / "xrepost-chrome.sh"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import xrepost_accounts  # noqa: E402  (depende del sys.path anterior)
+import xrepost_cdp  # noqa: E402
+import xrepost_exports  # noqa: E402
+import xrepost_filters  # noqa: E402
+import xrepost_fs  # noqa: E402
+import xrepost_groups  # noqa: E402
 import xrepost_hashtags  # noqa: E402
 import xrepost_history  # noqa: E402
+import xrepost_inbox  # noqa: E402
+import xrepost_jobs  # noqa: E402
 import xrepost_labels  # noqa: E402
 import xrepost_network  # noqa: E402
+import xrepost_schedule  # noqa: E402
+import xrepost_security  # noqa: E402
+import xrepost_stats  # noqa: E402
 
 MAX_BODY = 1_000_000
 MAX_LOG = 2_000
 MAX_JOBS = 20
 MAX_JOB_SECONDS = 30 * 60
+SESSION_TTL = 8 * 3600
+SESSION_IDLE = 30 * 60
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -66,12 +90,56 @@ STATUS_RE = re.compile(
 # Línea de estado por publicación del motor: "  reposteado: https://x.com/…".
 PROGRESS_RE = re.compile(r"^ {2}(.+?):\s+(https?://\S+/status/\d+)/?\s*$")
 
+# Variables de entorno que un trabajo puede heredar. Deliberadamente no se
+# copia todo el entorno del servidor: evita filtrar credenciales de la sesión
+# del usuario a subprocesos y evita que un X_* heredado cambie el trabajo.
+ENV_PASSTHROUGH = {
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TMPDIR",
+    "TZ",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "NO_COLOR",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
+    "XDG_STATE_HOME",
+}
+ENV_PREFIXES = ("XREPOST_", "BU_", "STUB_")
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": "geolocation=(), camera=(), microphone=(), payment=(), usb=()",
+}
+CSP = (
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; "
+    "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
+    "object-src 'none'; base-uri 'none'; form-action 'self'; "
+    "frame-ancestors 'none'; worker-src 'none'"
+)
+
 
 class HttpError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, *, retry_after: int = 0):
         super().__init__(message)
         self.status = status
         self.message = message
+        self.retry_after = retry_after
 
 
 def default_history() -> Path:
@@ -91,12 +159,8 @@ def fmt_seconds(value: float) -> str:
 
 
 def chrome_ok() -> bool:
-    base = os.environ.get("BU_CDP_URL", "http://127.0.0.1:9222").rstrip("/")
-    try:
-        with urllib.request.urlopen(base + "/json/version", timeout=0.8) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
+    """Compatibilidad: ¿hay un CDP de Chrome en loopback?"""
+    return xrepost_cdp.quick_available()
 
 
 def network_status() -> dict:
@@ -120,12 +184,18 @@ def network_status() -> dict:
 
 def restart_chrome() -> None:
     """Cierra y relanza Chrome con la preferencia vigente (llamada del panel)."""
-    if not CHROME_LAUNCHER.exists():
+    launcher = Path(CHROME_LAUNCHER)
+    if not launcher.exists() or not launcher.is_file():
         raise HttpError(500, "No se encontró el lanzador de Chrome.")
     try:
+        xrepost_fs.assert_regular_file(launcher)
+    except xrepost_fs.UnsafePathError as exc:
+        raise HttpError(500, f"Lanzador de Chrome no válido: {exc}")
+    try:
         proc = subprocess.run(
-            ["bash", str(CHROME_LAUNCHER), "--force"],
+            ["bash", str(launcher), "--force"],
             cwd=str(ROOT),
+            env=build_env({}),
             capture_output=True,
             text=True,
             timeout=90,
@@ -135,6 +205,18 @@ def restart_chrome() -> None:
     if proc.returncode != 0:
         print(f"[xrepost-web] restart_chrome falló: {proc.stderr[-800:]}", file=sys.stderr)
         raise HttpError(500, "No se pudo reiniciar Chrome con la nueva configuración.")
+
+
+def build_env(extra: dict[str, str]) -> dict[str, str]:
+    """Entorno mínimo y determinista para subprocesos."""
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key in ENV_PASSTHROUGH or key.startswith(ENV_PREFIXES):
+            env[key] = value
+    env.update({"PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"})
+    env.setdefault("PATH", os.defpath)
+    env.update({key: "" if value is None else str(value) for key, value in extra.items()})
+    return env
 
 
 def normalize_users(users: str) -> str:
@@ -223,7 +305,18 @@ def validate_repost_params(data: dict, *, apply: bool) -> dict:
         "quote": quote,
         "limit": limit,
         "delay": delay,
+        "profile_id": str(data.get("profile_id") or ""),
+        "filters": _clean_filters(data.get("filters")),
     }
+
+
+def _clean_filters(raw: object) -> dict | None:
+    if not isinstance(raw, dict) or not raw:
+        return None
+    try:
+        return xrepost_filters.normalize_spec(raw)
+    except xrepost_filters.FilterError as exc:
+        raise HttpError(400, str(exc))
 
 
 def params_key(params: dict) -> str:
@@ -236,36 +329,21 @@ def params_key(params: dict) -> str:
             "match": params["match"],
             "exclude": params["exclude"],
             "quote": params["quote"],
+            "filters": params.get("filters") or {},
+            "profile_id": params.get("profile_id") or "",
         },
         sort_keys=True,
     )
 
 
 def read_history(path: Path, limit: int = 30) -> list[dict]:
-    entries: list[dict] = []
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(item, dict) and item.get("id"):
-                    entries.append(item)
-    except FileNotFoundError:
-        return []
-    except OSError:
-        return []
-
-    # Un post puede tener varios eventos (repost y undo). Mostramos solo el
-    # último estado de cada uno, conservando el orden de la última aparición.
+    """Último estado por publicación, con la etiqueta y si se puede deshacer."""
+    entries = xrepost_history.read_events(path)
     latest: dict[str, dict] = {}
     for item in entries:
-        latest.pop(item["id"], None)
-        latest[item["id"]] = item
+        if isinstance(item, dict) and item.get("id"):
+            latest.pop(item["id"], None)
+            latest[item["id"]] = item
 
     # «Deshacer» se ofrece mientras el repost siga vigente según el motor,
     # no solo si el último evento fue el repost: tras un undo_failed el
@@ -296,11 +374,14 @@ def read_history(path: Path, limit: int = 30) -> list[dict]:
 
 
 class Job:
+    """Ejecución del motor con estado en memoria y su registro persistente."""
+
     def __init__(self, kind: str, params: dict, runs: Path):
         self.id = secrets.token_hex(8)
         self.kind = kind
         self.params = params
         self.status = "running"
+        self.state = xrepost_jobs.QUEUED
         self.started = time.time()
         self.ended: float | None = None
         self.returncode: int | None = None
@@ -309,7 +390,7 @@ class Job:
         self.lines: list[str] = []
         self.posts: list[dict] = []
         self.progress_done = 0
-        self.dir = runs / self.id
+        self.dir = Path(runs) / self.id
         self.csv_path = self.dir / "posts.csv"
         self.md_path = self.dir / "posts.md"
         self.proc: subprocess.Popen | None = None
@@ -321,6 +402,10 @@ class Job:
             if len(self.lines) > MAX_LOG:
                 self.lines = self.lines[-MAX_LOG:]
 
+    def set_state(self, state: str) -> None:
+        self.state = state
+        self.status = xrepost_jobs.STATUS_FOR_STATE.get(state, self.status)
+
     def snapshot(self, tail: int = 500) -> dict:
         with self.lock:
             lines = self.lines[-tail:]
@@ -330,6 +415,7 @@ class Job:
         return {
             "id": self.id,
             "kind": self.kind,
+            "state": self.state,
             "status": self.status,
             "started": self.started,
             "ended": self.ended,
@@ -369,53 +455,37 @@ class App:
         hashtags: Path | None = None,
         verbose: bool = False,
     ):
-        self.engine = Path(engine).expanduser().resolve()
+        self.engine = Path(engine).expanduser()
         self.history = Path(history).expanduser()
-        self.runs = Path(runs).expanduser()
-        self.runs.mkdir(parents=True, exist_ok=True)
+        self.runs = xrepost_fs.ensure_dir(Path(runs).expanduser())
         self.accounts, _ = xrepost_accounts.resolve_paths(accounts, self.history)
         self.hashtags = xrepost_hashtags.resolve_path(hashtags, self.history)
         self.token = token
         self.verbose = verbose
+        self.auth = xrepost_security.AuthManager(
+            token, ttl=SESSION_TTL, idle=SESSION_IDLE
+        )
         self.jobs: dict[str, Job] = {}
         self.current: Job | None = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self._scheduler_stop = threading.Event()
+        self._scheduler_thread: threading.Thread | None = None
+
+        state_dir = self.history.parent
+        self.job_store = xrepost_jobs.JobStore(self.runs)
+        self.profiles = xrepost_filters.ProfileStore(state_dir / "profiles.json")
+        self.groups = xrepost_groups.GroupStore(state_dir / "groups.json")
+        self.account_meta = xrepost_groups.AccountMetaStore(state_dir / "accounts_meta.json")
+        self.inbox = xrepost_inbox.InboxStore(state_dir / "inbox.json")
+        self.schedules = xrepost_schedule.ScheduleStore(state_dir / "schedules.json")
+
+        # Los trabajos que quedaron a medias se marcan como interrumpidos; nunca
+        # se reanudan solos porque el resultado en X es desconocido.
+        self.job_store.recover()
+        self.job_store.prune()
         self._prune_jobs()
 
-    def _prune_jobs(self) -> None:
-        """Conserva los últimos MAX_JOBS trabajos (memoria y disco).
-
-        Nunca toca el trabajo en curso ni la previsualización en la que se
-        apoya un ``apply`` en marcha (su ``selected.json`` vive en ese
-        directorio). Los directorios huérfanos de sesiones anteriores se
-        recortan por fecha de modificación.
-        """
-        with self.lock:
-            ordered = sorted(self.jobs.values(), key=lambda j: j.started, reverse=True)
-            keep_ids = {j.id for j in ordered[:MAX_JOBS]}
-            if self.current is not None:
-                keep_ids.add(self.current.id)
-                preview_id = self.current.params.get("preview_id")
-                if preview_id:
-                    keep_ids.add(preview_id)
-            doomed = [j for j in self.jobs.values() if j.id not in keep_ids]
-            for job in doomed:
-                self.jobs.pop(job.id, None)
-            keep_dirs = {j.dir.name for j in self.jobs.values()}
-            try:
-                dirs = sorted(
-                    (p for p in self.runs.iterdir() if p.is_dir()),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-            except OSError:
-                dirs = []
-            extra = [p for p in dirs[MAX_JOBS:] if p.name not in keep_dirs]
-        for job in doomed:
-            shutil.rmtree(job.dir, ignore_errors=True)
-        for path in extra:
-            shutil.rmtree(path, ignore_errors=True)
-
+    # -- autocompletado ------------------------------------------------------
     def suggest_accounts(
         self,
         query: str = "",
@@ -474,16 +544,47 @@ class App:
         except OSError:
             return False
 
+    def resolve_filters(self, params: dict) -> dict:
+        """Completa el filtro de un perfil y valida su forma."""
+        try:
+            if params.get("profile_id") and not params.get("filters"):
+                profile = self.profiles.get(str(params["profile_id"]))
+                if not profile:
+                    raise HttpError(400, "El perfil de filtros ya no existe.")
+                params["filters"] = xrepost_filters.normalize_spec(profile.get("filters") or {})
+            if params.get("filters"):
+                params["filters"] = xrepost_filters.normalize_spec(params["filters"])
+        except xrepost_filters.FilterError as exc:
+            raise HttpError(400, str(exc))
+        return params
+
+    # -- trabajos ------------------------------------------------------------
+    def running(self) -> bool:
+        with self.lock:
+            return bool(self.current is not None and self.current.status == "running")
+
     def start_job(self, kind: str, params: dict) -> Job:
         with self.lock:
-            if self.current is not None and self.current.status == "running":
+            if self.running():
                 raise HttpError(409, "Ya hay una ejecución en curso. Espera o cancélala.")
+            self._validate_cdp_endpoint()
             job = Job(kind, params, self.runs)
             self.jobs[job.id] = job
             self.current = job
+        self.job_store.create(job.id, kind, params)
         self._prune_jobs()
         threading.Thread(target=self._run_job, args=(job,), daemon=True).start()
         return job
+
+    @staticmethod
+    def _validate_cdp_endpoint() -> None:
+        """Nunca se lanza el motor contra un CDP remoto o mal formado."""
+        try:
+            endpoint = xrepost_cdp.parse_endpoint()
+        except xrepost_cdp.CdpSecurityError as exc:
+            raise HttpError(400, str(exc))
+        if endpoint.problems:
+            raise HttpError(400, "CDP no válido: " + "; ".join(endpoint.problems))
 
     def cancel(self) -> bool:
         with self.lock:
@@ -496,6 +597,7 @@ class App:
 
     def shutdown(self) -> None:
         """Al cerrar el panel, no dejar el motor (ni Chrome) trabajando solo."""
+        self._scheduler_stop.set()
         with self.lock:
             job = self.current
         if not job or job.status != "running":
@@ -537,34 +639,25 @@ class App:
         ]
 
     def _environment(self, job: Job) -> dict[str, str]:
-        env = os.environ.copy()
-        env.update(
-            {
-                "X_HISTORY": str(self.history),
-                "X_ACCOUNTS": str(self.accounts),
-                "X_HASHTAGS": str(self.hashtags),
-                "X_MODE": "repost",
-                "X_FORCE": "0",
-                # El entorno del servidor no debe colarse en los trabajos:
-                # un X_ONLY_URLS_FILE heredado redirigiría la previsualización
-                # a un listado viejo, y un X_QUOTE heredado mancharía los
-                # eventos de deshacer en el historial.
-                "X_ONLY_URLS_FILE": "",
-                "X_UNDO_TARGET": "",
-                "X_UNDO_N": "",
-                "X_QUOTE": "",
-                "PYTHONUNBUFFERED": "1",
-                "PYTHONIOENCODING": "utf-8",
-                "NO_COLOR": "1",
-                "TERM": "dumb",
-            }
-        )
+        extra = {
+            "X_HISTORY": str(self.history),
+            "X_ACCOUNTS": str(self.accounts),
+            "X_HASHTAGS": str(self.hashtags),
+            "X_MODE": "repost",
+            "X_FORCE": "0",
+            "X_ONLY_URLS_FILE": "",
+            "X_UNDO_TARGET": "",
+            "X_UNDO_N": "",
+            "X_QUOTE": "",
+            "NO_COLOR": "1",
+            "TERM": "dumb",
+        }
         if job.kind == "undo":
-            env["X_DELAY"] = "20"
-            return env
+            extra["X_DELAY"] = "20"
+            return build_env(extra)
 
         p = job.params
-        env.update(
+        extra.update(
             {
                 "X_USERS": p["users"],
                 "X_FROM": p["from"],
@@ -582,14 +675,18 @@ class App:
         )
         if job.kind == "apply" and p.get("only_urls_file"):
             # Aplicar exactamente lo que el usuario revisó, sin volver a buscar.
-            env["X_ONLY_URLS_FILE"] = str(p["only_urls_file"])
-        return env
+            extra["X_ONLY_URLS_FILE"] = str(p["only_urls_file"])
+        filters = p.get("filters")
+        if filters:
+            extra.update(xrepost_filters.to_env(filters))
+        return build_env(extra)
 
     def _run_job(self, job: Job) -> None:
         job.dir.mkdir(parents=True, exist_ok=True)
+        job.set_state(xrepost_jobs.RUNNING)
+        self.job_store.update(job.id, state=xrepost_jobs.RUNNING, started=job.started)
         try:
-            if not self.engine.exists():
-                raise FileNotFoundError(f"No existe el motor: {self.engine}")
+            self._validate_engine()
             cmd = self._command(job)
             env = self._environment(job)
             job.add("$ " + " ".join(shlex.quote(part) for part in cmd))
@@ -623,32 +720,50 @@ class App:
 
             if job.kind in ("preview", "apply"):
                 self._load_posts(job)
+                self._sync_inbox(job)
 
             if job.cancelled:
-                job.status = "cancelled"
+                job.set_state(xrepost_jobs.CANCELLED)
             elif rc == 0:
-                job.status = "done"
+                job.set_state(xrepost_jobs.COMPLETED)
             else:
-                job.status = "error"
+                job.set_state(xrepost_jobs.FAILED)
                 job.error = f"El motor terminó con código {rc}."
         except FileNotFoundError as exc:
-            job.status = "error"
+            job.set_state(xrepost_jobs.FAILED)
             job.error = str(exc)
             job.add(f"Error: {exc}")
         except Exception as exc:  # pragma: no cover - salvaguarda
-            job.status = "error"
+            job.set_state(xrepost_jobs.FAILED)
             job.error = f"Fallo inesperado: {exc}"
             job.add(job.error)
         finally:
             job.ended = time.time()
             if job.status == "running":
-                job.status = "error"
+                job.set_state(xrepost_jobs.FAILED)
                 job.error = job.error or "La ejecución no terminó correctamente."
+            self.job_store.update(
+                job.id,
+                state=job.state,
+                ended=job.ended,
+                returncode=job.returncode,
+                error=job.error,
+                post_count=len(job.posts),
+            )
             if job.proc and job.proc.stdout:
                 try:
                     job.proc.stdout.close()
                 except Exception:
                     pass
+
+    def _validate_engine(self) -> None:
+        path = Path(self.engine)
+        if not path.exists():
+            raise FileNotFoundError(f"No existe el motor: {path}")
+        try:
+            xrepost_fs.assert_regular_file(path)
+        except xrepost_fs.UnsafePathError as exc:
+            raise FileNotFoundError(f"Motor no válido: {exc}")
 
     def _load_posts(self, job: Job) -> None:
         if not job.csv_path.exists():
@@ -659,6 +774,52 @@ class App:
                 job.posts = [dict(row) for row in reader if row.get("url")]
         except Exception as exc:
             job.add(f"Aviso: no se pudo leer el CSV ({exc}).")
+
+    def _sync_inbox(self, job: Job) -> None:
+        """Sincroniza la bandeja con el resultado real de la ejecución.
+
+        Una previsualización añade publicaciones pendientes. Una ejecución
+        actualiza el estado de lo aprobado: confirmado → ``verified``, incierto
+        → ``unconfirmed`` (no se reintenta solo) y fallo → ``failed``.
+        """
+        if not job.posts:
+            return
+        try:
+            if job.kind != "apply":
+                self.inbox.upsert_from_posts(job.posts, job.params, job.id)
+                return
+
+            inverse = {text: code for code, text in xrepost_labels.LABELS.items()}
+            confirmed: list[str] = []
+            uncertain: list[str] = []
+            failed: list[str] = []
+            for post in job.posts:
+                item_id = xrepost_history.tweet_id(str(post.get("url") or ""))
+                if not item_id:
+                    continue
+                estado = str(post.get("estado") or "").strip().lower()
+                result = inverse.get(estado, "")
+                if result in ("reposted", "quoted", "already"):
+                    confirmed.append(item_id)
+                elif result in xrepost_labels.UNCERTAIN_RESULTS or result == "skipped_uncertain":
+                    uncertain.append(item_id)
+                elif estado.startswith(("no procesado", "pendiente", "solo listado")):
+                    continue
+                else:
+                    failed.append(item_id)
+
+            if confirmed:
+                self.inbox.mark(confirmed, xrepost_inbox.VERIFIED, "confirmado en X")
+            if uncertain:
+                self.inbox.mark(
+                    uncertain,
+                    xrepost_inbox.UNCONFIRMED,
+                    "sin confirmar; revisa tu perfil antes de reintentar",
+                )
+            if failed:
+                self.inbox.mark(failed, xrepost_inbox.FAILED, "el motor no pudo completarlo")
+        except (OSError, ValueError) as exc:
+            job.add(f"Aviso: no se pudo actualizar la bandeja ({exc}).")
 
     def _track_progress(self, job: Job, line: str) -> None:
         """Estado por publicación mientras el motor trabaja (apply).
@@ -685,6 +846,7 @@ class App:
             if time.time() - job.started > MAX_JOB_SECONDS:
                 job.add("Tiempo máximo alcanzado; cancelando la ejecución.")
                 job.cancelled = True
+                job.set_state(xrepost_jobs.TIMED_OUT)
                 self._terminate(job)
                 return
             time.sleep(1)
@@ -709,15 +871,160 @@ class App:
             except (ProcessLookupError, PermissionError, OSError):
                 pass
 
+    def _prune_jobs(self) -> None:
+        """Conserva los últimos MAX_JOBS trabajos (memoria y disco).
+
+        Nunca toca el trabajo en curso ni la previsualización en la que se
+        apoya un ``apply`` en marcha (su ``selected.json`` vive en ese
+        directorio). Los directorios huérfanos de sesiones anteriores se
+        recortan por fecha de modificación.
+        """
+        with self.lock:
+            ordered = sorted(self.jobs.values(), key=lambda j: j.started, reverse=True)
+            keep_ids = {j.id for j in ordered[:MAX_JOBS]}
+            if self.current is not None:
+                keep_ids.add(self.current.id)
+                preview_id = self.current.params.get("preview_id")
+                if preview_id:
+                    keep_ids.add(preview_id)
+            doomed = [j for j in self.jobs.values() if j.id not in keep_ids]
+            for job in doomed:
+                self.jobs.pop(job.id, None)
+            keep_dirs = {j.dir.name for j in self.jobs.values()}
+            try:
+                dirs = sorted(
+                    (p for p in self.runs.iterdir() if p.is_dir()),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+            except OSError:
+                dirs = []
+            extra = [p for p in dirs[MAX_JOBS:] if p.name not in keep_dirs]
+        for job in doomed:
+            self._remove_run_dir(job.dir)
+        for path in extra:
+            self._remove_run_dir(path)
+
+    def _remove_run_dir(self, path: Path) -> None:
+        try:
+            xrepost_fs.remove_tree(path, self.runs)
+        except (OSError, xrepost_fs.UnsafePathError):
+            shutil.rmtree(path, ignore_errors=True)
+
+    # -- exportaciones y respaldo -------------------------------------------
+    def export_rows(self, rows: list[dict], fmt: str, *, title: str = "Informe de xrepost") -> tuple[bytes, str, str]:
+        fmt = fmt.lower()
+        if fmt == "csv":
+            return xrepost_exports.rows_to_csv(rows).encode("utf-8"), "text/csv; charset=utf-8", "csv"
+        if fmt == "md":
+            return xrepost_exports.rows_to_markdown(rows, title=title).encode("utf-8"), "text/markdown; charset=utf-8", "md"
+        if fmt == "json":
+            payload = json.dumps(rows, ensure_ascii=False, indent=2, sort_keys=False) + "\n"
+            return payload.encode("utf-8"), "application/json; charset=utf-8", "json"
+        if fmt == "html":
+            return xrepost_exports.rows_to_html(rows, title=title).encode("utf-8"), "text/html; charset=utf-8", "html"
+        if fmt == "pdf":
+            return xrepost_exports.rows_to_pdf(rows, title=title), "application/pdf", "pdf"
+        raise HttpError(400, f"Formato de exportación no válido: {fmt}")
+
+    def history_backups(self) -> list[dict]:
+        return xrepost_history.list_backups(self.history)
+
+    def make_backup(self, mode: str = "history") -> dict:
+        if mode == "bundle":
+            target = xrepost_exports.new_backup_path(self.history.parent)
+            return xrepost_exports.backup_bundle(self.history.parent, target)
+        return xrepost_history.backup(self.history)
+
+    def restore_backup(self, path: str, *, force: bool = False) -> dict:
+        candidate = Path(path).expanduser()
+        allowed = [Path(item["path"]) for item in self.history_backups()]
+        allowed.append(self.history)
+        resolved = candidate.resolve()
+        if not any(resolved == item.resolve() for item in allowed if item.exists()):
+            raise HttpError(400, "Solo se pueden restaurar backups creados por xrepost.")
+        if candidate.suffix == ".gz":
+            return xrepost_exports.restore_bundle(candidate, self.history.parent)
+        return xrepost_history.restore(self.history, candidate, force=force)
+
+    # -- diagnóstico ---------------------------------------------------------
+    def cdp_report(self) -> dict:
+        try:
+            return xrepost_cdp.status()
+        except Exception as exc:  # pragma: no cover - salvaguarda
+            return {"secure": False, "reachable": False, "problems": [str(exc)]}
+
+    def diagnostics(self) -> dict:
+        history = xrepost_history.diagnose(self.history)
+        cdp = self.cdp_report()
+        engine = Path(self.engine)
+        return {
+            "history": history,
+            "cdp": cdp,
+            "engine": {
+                "path": str(engine),
+                "exists": engine.exists(),
+                "regular": engine.is_file() and not engine.is_symlink(),
+                "executable": os.access(engine, os.X_OK),
+            },
+            "storage": {
+                "state_dir": str(self.history.parent),
+                "runs": str(self.runs),
+                "journal_mode": "append-only",
+            },
+            "auth": {"sessions": self.auth.count()},
+            "jobs": {
+                "runtime": len(self.jobs),
+                "persistent": len(self.job_store.list()),
+            },
+        }
+
+    # -- programación --------------------------------------------------------
+    def run_due_schedules(self) -> list[dict]:
+        """Ejecuta previsualizaciones programadas (nunca repostea solo)."""
+        started: list[dict] = []
+        for item in self.schedules.due():
+            try:
+                params = validate_repost_params({**item.get("params", {}), "confirm": False}, apply=False)
+                params["key"] = params_key(params)
+                self.record_accounts(params["users"])
+                job = self.start_job("preview", params)
+                self.schedules.mark_run(item["id"], job_id=job.id, result="preview started")
+                started.append({"schedule": item["id"], "job": job.id})
+            except Exception as exc:
+                self.schedules.update(
+                    item["id"], last_run=now_iso(), last_result=f"error: {exc}"
+                )
+        return started
+
+    def start_scheduler(self) -> None:
+        if self._scheduler_thread is not None:
+            return
+        self._scheduler_stop.clear()
+
+        def loop() -> None:
+            while not self._scheduler_stop.wait(30):
+                try:
+                    self.run_due_schedules()
+                except Exception as exc:  # pragma: no cover - salvaguarda
+                    print(f"[xrepost-web] programación: {exc}", file=sys.stderr)
+
+        self._scheduler_thread = threading.Thread(target=loop, daemon=True)
+        self._scheduler_thread.start()
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "xrepost-web/1.0"
+    server_version = "xrepost-web/2.0"
     application: App
 
+    # --- registro ----------------------------------------------------------
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003
-        if self.application.verbose:
-            super().log_message(fmt, *args)
+        if not self.application.verbose:
+            return
+        message = fmt % args if args else fmt
+        message = re.sub(r"(token|csrf)=[^&\s\"']+", r"\1=***", message)
+        super().log_message("%s", message)
 
     def _internal_error(self, exc: Exception) -> None:
         """500 genérico al cliente; el detalle queda solo en el log local (M7)."""
@@ -728,33 +1035,77 @@ class Handler(BaseHTTPRequestHandler):
         traceback.print_exc(file=sys.stderr)
         self._send_json({"error": "Error interno del servidor."}, 500)
 
-    # --- utilidades HTTP ---------------------------------------------------
+    # --- autenticación -----------------------------------------------------
+    def _cookie(self, name: str) -> str:
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        morsel = cookie.get(name)
+        return morsel.value if morsel else ""
 
-    def _host_ok(self) -> bool:
-        host = urlparse("//" + (self.headers.get("Host") or "")).hostname
-        return host in {"127.0.0.1", "localhost", "::1"}
+    def _session(self) -> xrepost_security.Session | None:
+        return self.application.auth.get(self._cookie("xrepost_sid") or None)
 
-    def _origin_ok(self) -> bool:
-        origin = self.headers.get("Origin")
-        if not origin:
-            return True
-        host = urlparse(origin).hostname
-        return host in {"127.0.0.1", "localhost", "::1"}
+    def _auth_kind(self) -> str:
+        """``header`` (X-Token), ``session`` (cookie + CSRF) o ``cookie`` (legado)."""
+        header = self.headers.get("X-Token", "")
+        if header and self.application.auth.master_ok(header):
+            return "header"
+        if self._session() is not None:
+            return "session"
+        legacy = self.headers.get("Cookie", "")
+        if legacy and self.application.auth.master_ok(self._cookie("xrepost_token")):
+            return "cookie"
+        return ""
 
     def _token_ok(self) -> bool:
-        header = self.headers.get("X-Token", "")
-        if header and hmac.compare_digest(header, self.application.token):
-            return True
-        cookie = SimpleCookie(self.headers.get("Cookie", ""))
-        morsel = cookie.get("xrepost_token")
-        return bool(morsel and hmac.compare_digest(morsel.value, self.application.token))
+        return bool(self._auth_kind())
 
+    def _require_auth(self) -> str:
+        kind = self._auth_kind()
+        if kind:
+            return kind
+        client = xrepost_security.client_id(self)
+        wait = self.application.auth.blocked_for(client)
+        if wait:
+            raise HttpError(429, f"Demasiados intentos fallidos. Espera {wait} s.", retry_after=wait)
+        self.application.auth.register_failure(client)
+        raise HttpError(401, "No autorizado.")
+
+    def _require_csrf(self) -> str:
+        kind = self._require_auth()
+        if kind == "header":
+            # Una cabecera personalizada no se puede enviar desde otro origen
+            # sin un preflight CORS que este servidor no concede.
+            return kind
+        session = self._session()
+        candidate = self.headers.get("X-CSRF-Token", "")
+        if kind == "session" and session is not None and self.application.auth.csrf_ok(session, candidate):
+            return kind
+        raise HttpError(
+            403,
+            "Falta el token CSRF de la sesión. Recarga el panel o vuelve a iniciar sesión.",
+        )
+
+    def _host_ok(self) -> bool:
+        port = self.server.server_address[1] if getattr(self, "server", None) else None
+        return xrepost_security.host_allowed(self.headers.get("Host", ""), server_port=port)
+
+    def _origin_ok(self) -> bool:
+        return xrepost_security.allowed_origin(
+            self.headers.get("Origin", ""), self.headers.get("Host", "")
+        )
+
+    # --- utilidades HTTP ---------------------------------------------------
     def _security_headers(self) -> None:
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("X-Frame-Options", "DENY")
+        for key, value in SECURITY_HEADERS.items():
+            self.send_header(key, value)
 
-    def _send_json(self, payload: dict, status: int = 200) -> None:
+    def _send_json(
+        self,
+        payload: dict,
+        status: int = 200,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -763,6 +1114,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.close_connection:
             self.send_header("Connection", "close")
         self._security_headers()
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -794,12 +1147,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _error_page(self, status: int, title: str, detail: str) -> None:
         body = f"""<!doctype html><html lang="es"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
-<style>body{{font:16px/1.5 system-ui,sans-serif;background:#0b1020;color:#e8edf7;
+<style>body{{font:16px/1.5 system-ui,sans-serif;background:#0B1220;color:#F1F5F9;
 display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}}
-main{{max-width:560px;background:#111832;border:1px solid #24304f;border-radius:16px;padding:28px}}
-h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
-<main><h1>{title}</h1><p>{detail}</p></main></html>"""
+main{{max-width:560px;background:#111C2E;border:1px solid #1B293D;border-radius:16px;padding:28px}}
+h1{{font-size:20px;margin:0 0 8px}}p{{color:#94A3B8;margin:0}}
+a{{color:#38BDF8}}</style>
+<main><h1>{title}</h1><p>{detail}</p><p style="margin-top:16px"><a href="/">Volver al panel</a></p></main></html>"""
         self._send_bytes(body.encode("utf-8"), "text/html; charset=utf-8", status)
 
     def _read_json(self) -> dict:
@@ -838,7 +1193,6 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
             remaining -= len(chunk)
 
     # --- rutas -------------------------------------------------------------
-
     def do_GET(self) -> None:  # noqa: N802
         try:
             if not self._host_ok():
@@ -853,14 +1207,10 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
                 self.end_headers()
                 return
             if path.startswith("/static/"):
-                if not self._token_ok():
-                    raise HttpError(401, "No autorizado.")
+                self._require_auth()
                 return self._static(path[len("/static/"):])
             if path.startswith("/api/"):
-                if not self._token_ok():
-                    raise HttpError(401, "No autorizado.")
-                if path == "/api/network":
-                    return self._send_json(network_status())
+                self._require_auth()
                 return self._api_get(path)
             raise HttpError(404, "Ruta no encontrada.")
         except HttpError as exc:
@@ -873,7 +1223,7 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
         except Exception as exc:  # pragma: no cover - salvaguarda
             self._internal_error(exc)
 
-    def do_POST(self) -> None:  # noqa: N802
+    def _handle_write(self) -> None:
         try:
             # Rechazos antes de leer el cuerpo: sin drenarlo, los bytes que
             # queden se interpretarían como la siguiente petición keep-alive.
@@ -883,53 +1233,67 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
             if not self._origin_ok():
                 self.close_connection = True
                 raise HttpError(403, "Origen no permitido.")
-            if not self._token_ok():
+            if not self._auth_kind():
+                # Si se rechaza antes de leer el cuerpo, la conexión no puede
+                # reutilizarse: los bytes pendientes se interpretarían como
+                # una petición nueva.
                 self.close_connection = True
-                raise HttpError(401, "No autorizado.")
+            self._require_csrf()
             path = urlparse(self.path).path
             data = self._read_json()
-            if path == "/api/network":
-                return self._api_network_set(data)
-            if path == "/api/network/restart":
-                return self._api_network_restart()
-            if path == "/api/preview":
-                return self._api_preview(data)
-            if path == "/api/apply":
-                return self._api_apply(data)
-            if path == "/api/undo":
-                return self._api_undo(data)
-            if path == "/api/cancel":
-                return self._api_cancel()
-            if path == "/api/accounts/clear":
-                return self._api_clear_accounts()
-            if path == "/api/hashtags/clear":
-                return self._api_clear_hashtags()
-            raise HttpError(404, "Ruta no encontrada.")
+            self._api_post(path, data)
         except HttpError as exc:
-            self._send_json({"error": exc.message}, exc.status)
+            payload = {"error": exc.message}
+            if exc.retry_after:
+                payload["retry_after"] = exc.retry_after
+            self._send_json(payload, exc.status)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:  # pragma: no cover - salvaguarda
             self._internal_error(exc)
 
+    def do_POST(self) -> None:  # noqa: N802
+        self._handle_write()
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        self._handle_write()
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._handle_write()
+
     def _index(self) -> None:
         query = parse_qs(urlparse(self.path).query)
         token = (query.get("token") or [""])[0]
         if token:
-            if not hmac.compare_digest(token, self.application.token):
+            client = xrepost_security.client_id(self)
+            wait = self.application.auth.blocked_for(client)
+            if wait:
+                raise HttpError(429, f"Demasiados intentos fallidos. Espera {wait} s.", retry_after=wait)
+            if not self.application.auth.master_ok(token):
+                self.application.auth.register_failure(client)
                 raise HttpError(401, "Enlace no válido.")
+            self.application.auth.register_success(client)
+            session = self.application.auth.create(
+                client=client, user_agent=self.headers.get("User-Agent", "")
+            )
             self.send_response(HTTPStatus.SEE_OTHER)
             self.send_header(
                 "Set-Cookie",
-                f"xrepost_token={self.application.token}; Path=/; HttpOnly; SameSite=Lax",
+                xrepost_security.cookie_header(session.sid, max_age=SESSION_TTL),
+            )
+            # Compatibilidad con clientes/versiones anteriores: cookie maestra
+            # HttpOnly. Las escrituras con esta cookie exigen X-Token o sesión.
+            self.send_header(
+                "Set-Cookie",
+                f"xrepost_token={self.application.token}; Path=/; Max-Age={SESSION_TTL}; "
+                "HttpOnly; SameSite=Strict",
             )
             self.send_header("Location", "/")
             self.send_header("Content-Length", "0")
             self._security_headers()
             self.end_headers()
             return
-        if not self._token_ok():
-            raise HttpError(401, "No autorizado.")
+        self._require_auth()
         self._serve_static("index.html", "text/html; charset=utf-8")
 
     def _static(self, name: str) -> None:
@@ -944,18 +1308,32 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
         if not path.is_relative_to(STATIC_DIR.resolve()) or not path.is_file():
             raise HttpError(404, "Archivo no encontrado.")
         body = path.read_bytes()
-        csp = (
-            "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
-            "base-uri 'none'; form-action 'self'"
-        )
-        self._send_bytes(
-            body,
-            content_type,
-            extra={"Content-Security-Policy": csp} if content_type.startswith("text/html") else None,
-        )
+        extra = {"Content-Security-Policy": CSP}
+        self._send_bytes(body, content_type, extra=extra)
 
+    # --- GET ---------------------------------------------------------------
     def _api_get(self, path: str) -> None:
+        query = parse_qs(urlparse(self.path).query)
+        if path == "/api/network":
+            return self._send_json(network_status())
+        if path == "/api/session":
+            session = self._session()
+            if session is None:
+                session = self.application.auth.create(
+                    client=xrepost_security.client_id(self),
+                    user_agent=self.headers.get("User-Agent", ""),
+                )
+                cookie = {"Set-Cookie": xrepost_security.cookie_header(session.sid, max_age=SESSION_TTL)}
+            else:
+                cookie = None
+            return self._send_json(
+                {
+                    "ok": True,
+                    **self.application.auth.describe(session),
+                    "token_ok": True,
+                },
+                extra_headers=cookie,
+            )
         if path == "/api/health":
             return self._send_json(
                 {
@@ -964,11 +1342,12 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
                     "engine_ok": self.application.engine.exists(),
                     "chrome": chrome_ok(),
                     "history": str(self.application.history),
-                    "busy": bool(self.application.current and self.application.current.status == "running"),
+                    "busy": self.application.running(),
+                    "state_dir": str(self.application.history.parent),
+                    "version": "2.0",
                 }
             )
         if path == "/api/history":
-            query = parse_qs(urlparse(self.path).query)
             try:
                 limit = int((query.get("n") or ["30"])[0])
             except ValueError:
@@ -976,8 +1355,10 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
             limit = max(1, min(limit, 200))
             return self._send_json({"entries": read_history(self.application.history, limit)})
 
+        if path == "/api/history/diagnostic":
+            return self._send_json(xrepost_history.diagnose(self.application.history))
+
         if path == "/api/hashtags":
-            query = parse_qs(urlparse(self.path).query)
             text = (query.get("q") or [""])[0].strip()
             try:
                 limit = int((query.get("limit") or ["8"])[0])
@@ -991,8 +1372,42 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
             )
             return self._send_json({"hashtags": items})
 
+        if path == "/api/accounts/all":
+            entries = xrepost_accounts.load_accounts(self.application.accounts, self.application.history)
+            meta = self.application.account_meta.all()
+            stats = {
+                str(item.get("handle") or "").lstrip("@").lower(): item
+                for item in xrepost_groups.account_stats(self.application.history)
+            }
+            items = []
+            for key, item in entries.items():
+                extra = meta.get(key) or {}
+                activity = stats.get(key) or {}
+                items.append(
+                    {
+                        "handle": item.get("handle") or key,
+                        "count": int(item.get("count") or 0),
+                        "last_used": item.get("last_used") or "",
+                        "alias": extra.get("alias", ""),
+                        "favorite": bool(extra.get("favorite")),
+                        "reposts": int(activity.get("reposts") or 0),
+                        "quotes": int(activity.get("quotes") or 0),
+                        "undone": int(activity.get("undone") or 0),
+                        "errors": int(activity.get("errors") or 0),
+                        "last_activity": activity.get("last") or "",
+                    }
+                )
+            items.sort(
+                key=lambda item: (
+                    item["favorite"],
+                    item["last_activity"] or item["last_used"] or "",
+                    item["count"],
+                ),
+                reverse=True,
+            )
+            return self._send_json({"accounts": items})
+
         if path == "/api/accounts":
-            query = parse_qs(urlparse(self.path).query)
             text = (query.get("q") or [""])[0].strip()
             try:
                 limit = int((query.get("limit") or ["8"])[0])
@@ -1004,36 +1419,345 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
                 exclude=xrepost_accounts.split_handles(exclude),
                 limit=limit,
             )
+            meta = self.application.account_meta.all()
+            for item in items:
+                handle = str(item.get("usuario") or item.get("handle") or "").lstrip("@").lower()
+                extra = meta.get(handle)
+                if extra:
+                    item["alias"] = extra.get("alias", "")
+                    item["favorite"] = extra.get("favorite", False)
             return self._send_json({"accounts": items})
+
+        if path == "/api/stats":
+            try:
+                days = int((query.get("days") or ["30"])[0])
+            except ValueError:
+                days = 30
+            return self._send_json(
+                xrepost_stats.compute(
+                    self.application.history,
+                    jobs=self.application.job_store.list(),
+                    inbox=self.application.inbox.list(limit=5000),
+                    schedules=self.application.schedules.list(),
+                    days=max(1, min(days, 365)),
+                )
+            )
+
+        if path == "/api/profiles":
+            return self._send_json({"profiles": self.application.profiles.list()})
+
+        if path == "/api/groups":
+            groups = self.application.groups.list()
+            return self._send_json(
+                {"groups": groups, "counts": {item["id"]: len(item.get("members", [])) for item in groups}}
+            )
+
+        if path == "/api/inbox":
+            status = (query.get("status") or [""])[0]
+            text = (query.get("q") or [""])[0]
+            try:
+                limit = int((query.get("limit") or ["200"])[0])
+            except ValueError:
+                limit = 200
+            return self._send_json(
+                {
+                    "items": self.application.inbox.list(status=status, query=text, limit=limit),
+                    "counts": self.application.inbox.counts(),
+                }
+            )
+
+        if path == "/api/schedules":
+            return self._send_json({"schedules": self.application.schedules.list()})
+
+        if path == "/api/backups":
+            return self._send_json(
+                {"backups": self.application.history_backups()}
+            )
+
+        if path == "/api/diagnostics":
+            return self._send_json(self.application.diagnostics())
+
+        if path == "/api/cdp":
+            return self._send_json(self.application.cdp_report())
+
+        if path == "/api/jobs":
+            runtime = {job.id: job for job in self.application.jobs.values()}
+            records = self.application.job_store.list(limit=100)
+            out = []
+            for record in records:
+                job = runtime.get(record["id"])
+                out.append(job.snapshot(tail=20) if job else record)
+            for job in runtime.values():
+                if not any(item.get("id") == job.id for item in out):
+                    out.append(job.snapshot(tail=20))
+            out.sort(key=lambda item: float(item.get("started") or item.get("created") or 0), reverse=True)
+            return self._send_json({"jobs": out})
 
         match = re.fullmatch(r"/api/jobs/([0-9a-f]+)", path)
         if match:
             job = self.application.jobs.get(match.group(1))
-            if not job:
-                raise HttpError(404, "Ejecución no encontrada.")
-            return self._send_json(job.snapshot())
+            if job:
+                return self._send_json(job.snapshot())
+            record = self.application.job_store.get(match.group(1))
+            if record:
+                return self._send_json(record)
+            raise HttpError(404, "Ejecución no encontrada.")
 
-        match = re.fullmatch(r"/api/jobs/([0-9a-f]+)/export/(csv|md)", path)
+        match = re.fullmatch(r"/api/jobs/([0-9a-f]+)/export/(csv|md|json|html|pdf)", path)
         if match:
-            job = self.application.jobs.get(match.group(1))
-            if not job:
+            job_id, fmt = match.group(1), match.group(2)
+            folder = self.application.runs / job_id
+            if not xrepost_fs.is_within(self.application.runs, folder):
                 raise HttpError(404, "Ejecución no encontrada.")
-            fmt = match.group(2)
-            path_file = job.csv_path if fmt == "csv" else job.md_path
-            if not path_file.exists():
+            job = self.application.jobs.get(job_id)
+            rows = job.posts if job else []
+            if not rows:
+                csv_path = folder / "posts.csv"
+                if csv_path.exists():
+                    with open(csv_path, newline="", encoding="utf-8") as fh:
+                        rows = [dict(row) for row in csv.DictReader(fh) if row.get("url")]
+            if not rows:
                 raise HttpError(404, "Esa ejecución no generó exportación.")
-            ctype = "text/csv; charset=utf-8" if fmt == "csv" else "text/markdown; charset=utf-8"
-            return self._send_file(
-                path_file,
+            body, ctype, ext = self.application.export_rows(rows, fmt, title=f"Ejecución {job_id}")
+            return self._send_bytes(
+                body,
                 ctype,
-                download=f"xrepost-{job.id}.{fmt}",
+                extra={"Content-Disposition": f'attachment; filename="xrepost-{job_id}.{ext}"'},
+            )
+
+        match = re.fullmatch(r"/api/groups/([0-9a-f]+)/export", path)
+        if match:
+            group = self.application.groups.get(match.group(1))
+            if not group:
+                raise HttpError(404, "Grupo no encontrado.")
+            fmt = (query.get("format") or ["csv"])[0]
+            if fmt == "json":
+                payload = json.dumps(group, ensure_ascii=False, indent=2) + "\n"
+                return self._send_bytes(
+                    payload.encode("utf-8"),
+                    "application/json; charset=utf-8",
+                    extra={"Content-Disposition": f'attachment; filename="grupo-{group["id"]}.json"'},
+                )
+            body = xrepost_groups.GroupStore(self.application.groups.path).export_csv(group["id"])
+            return self._send_bytes(
+                body.encode("utf-8"),
+                "text/csv; charset=utf-8",
+                extra={"Content-Disposition": f'attachment; filename="grupo-{group["id"]}.csv"'},
             )
 
         raise HttpError(404, "Ruta no encontrada.")
 
+    # --- POST / PATCH / DELETE --------------------------------------------
+    def _api_post(self, path: str, data: dict) -> None:
+        if path == "/api/session/rotate":
+            session = self._session()
+            if session is None:
+                raise HttpError(401, "No hay sesión que rotar.")
+            fresh = self.application.auth.rotate(session.sid, client=xrepost_security.client_id(self))
+            if fresh is None:
+                raise HttpError(401, "La sesión ya no es válida.")
+            self._send_json(
+                {"ok": True, **self.application.auth.describe(fresh)},
+                extra_headers={"Set-Cookie": xrepost_security.cookie_header(fresh.sid, max_age=SESSION_TTL)},
+            )
+            return
+        if path == "/api/session/logout":
+            session = self._session()
+            self.application.auth.revoke(session.sid if session else None)
+            self._send_json(
+                {"ok": True},
+                extra_headers={"Set-Cookie": xrepost_security.clear_cookie_header()},
+            )
+            return
+
+        if path == "/api/network":
+            return self._api_network_set(data)
+        if path == "/api/network/restart":
+            return self._api_network_restart()
+        if path == "/api/preview":
+            return self._api_preview(data)
+        if path == "/api/apply":
+            return self._api_apply(data)
+        if path == "/api/undo":
+            return self._api_undo(data)
+        if path == "/api/cancel":
+            return self._api_cancel()
+        if path == "/api/accounts/clear":
+            return self._api_clear_accounts()
+        if path == "/api/hashtags/clear":
+            return self._api_clear_hashtags()
+        if path == "/api/export":
+            return self._api_export(data)
+        if path == "/api/filters/validate":
+            return self._api_validate_filter(data)
+        if path == "/api/profiles":
+            return self._api_profile_save(data)
+        match = re.fullmatch(r"/api/profiles/([0-9a-f]+)/duplicate", path)
+        if match:
+            profile = self.application.profiles.duplicate(match.group(1), str(data.get("name") or ""))
+            return self._send_json({"ok": True, "profile": profile})
+        match = re.fullmatch(r"/api/profiles/([0-9a-f]+)", path)
+        if match:
+            removed = self.application.profiles.delete(match.group(1))
+            if not removed:
+                raise HttpError(404, "Perfil no encontrado.")
+            return self._send_json({"ok": True, "deleted": True})
+        if path == "/api/profiles/import":
+            try:
+                saved = self.application.profiles.import_data(data)
+            except xrepost_filters.FilterError as exc:
+                raise HttpError(400, str(exc))
+            return self._send_json({"ok": True, "profiles": saved})
+
+        if path == "/api/groups":
+            try:
+                group = self.application.groups.create(
+                    str(data.get("name") or ""),
+                    str(data.get("description") or ""),
+                    data.get("members") or [],
+                )
+            except (ValueError, xrepost_filters.FilterError) as exc:
+                raise HttpError(400, str(exc))
+            return self._send_json({"ok": True, "group": group}, 201)
+        match = re.fullmatch(r"/api/groups/([0-9a-f]+)/members", path)
+        if match:
+            return self._api_group_members(match.group(1), data)
+        match = re.fullmatch(r"/api/groups/([0-9a-f]+)/import", path)
+        if match:
+            try:
+                parsed = self.application.groups.import_into(
+                    match.group(1), str(data.get("text") or ""), replace=bool(data.get("replace"))
+                )
+            except KeyError:
+                raise HttpError(404, "Grupo no encontrado.")
+            except ValueError as exc:
+                raise HttpError(400, str(exc))
+            return self._send_json({"ok": True, **parsed})
+        match = re.fullmatch(r"/api/groups/([0-9a-f]+)", path)
+        if match:
+            fields = {
+                key: data[key]
+                for key in ("name", "description", "members")
+                if key in data
+            }
+            try:
+                group = self.application.groups.update(match.group(1), **fields)
+            except KeyError:
+                raise HttpError(404, "Grupo no encontrado.")
+            except ValueError as exc:
+                raise HttpError(400, str(exc))
+            return self._send_json({"ok": True, "group": group})
+        match = re.fullmatch(r"/api/groups/([0-9a-f]+)/delete", path)
+        if match:
+            if not self.application.groups.delete(match.group(1)):
+                raise HttpError(404, "Grupo no encontrado.")
+            return self._send_json({"ok": True, "deleted": True})
+
+        if path == "/api/accounts/meta":
+            handle = str(data.get("handle") or "")
+            try:
+                item = self.application.account_meta.set(
+                    handle,
+                    alias=data.get("alias") if "alias" in data else None,
+                    favorite=data.get("favorite") if "favorite" in data else None,
+                )
+            except ValueError as exc:
+                raise HttpError(400, str(exc))
+            return self._send_json({"ok": True, "account": item})
+
+        if path == "/api/inbox/decide":
+            ids = data.get("ids")
+            if not isinstance(ids, list) or not all(isinstance(item, (str, int)) for item in ids):
+                raise HttpError(400, "Lista de publicaciones no válida.")
+            try:
+                result = self.application.inbox.decide([str(item) for item in ids], str(data.get("status") or ""))
+            except ValueError as exc:
+                raise HttpError(400, str(exc))
+            return self._send_json({"ok": True, **result})
+        if path == "/api/inbox/apply":
+            return self._api_inbox_apply(data)
+        if path == "/api/inbox/import":
+            items = data.get("items")
+            if not isinstance(items, list):
+                raise HttpError(400, "El archivo no contiene una lista de elementos.")
+            count = self.application.inbox.import_items(items)
+            return self._send_json({"ok": True, "imported": count})
+
+        if path == "/api/schedules":
+            try:
+                item = self.application.schedules.create(
+                    str(data.get("name") or ""),
+                    data.get("params") or {},
+                    frequency=str(data.get("frequency") or ""),
+                    run_at=str(data.get("run_at") or ""),
+                    enabled=bool(data.get("enabled", True)),
+                    notify=bool(data.get("notify", True)),
+                )
+            except ValueError as exc:
+                raise HttpError(400, str(exc))
+            return self._send_json({"ok": True, "schedule": item}, 201)
+        match = re.fullmatch(r"/api/schedules/([0-9a-f]+)/run", path)
+        if match:
+            item = self.application.schedules.get(match.group(1))
+            if not item:
+                raise HttpError(404, "Programación no encontrada.")
+            params = validate_repost_params({**item.get("params", {}), "confirm": False}, apply=False)
+            params["key"] = params_key(params)
+            self.application.record_accounts(params["users"])
+            job = self.application.start_job("preview", params)
+            self.application.schedules.mark_run(item["id"], job_id=job.id, result="manual")
+            return self._send_json({"ok": True, "id": job.id}, 202)
+        match = re.fullmatch(r"/api/schedules/([0-9a-f]+)", path)
+        if match:
+            fields = {
+                key: data[key]
+                for key in ("name", "enabled", "notify", "frequency", "run_at", "params")
+                if key in data
+            }
+            try:
+                item = self.application.schedules.update(match.group(1), **fields)
+            except KeyError:
+                raise HttpError(404, "Programación no encontrada.")
+            except ValueError as exc:
+                raise HttpError(400, str(exc))
+            return self._send_json({"ok": True, "schedule": item})
+        match = re.fullmatch(r"/api/schedules/([0-9a-f]+)/delete", path)
+        if match:
+            if not self.application.schedules.delete(match.group(1)):
+                raise HttpError(404, "Programación no encontrada.")
+            return self._send_json({"ok": True, "deleted": True})
+
+        if path == "/api/backup":
+            mode = str(data.get("mode") or "history")
+            try:
+                return self._send_json({"ok": True, "backup": self.application.make_backup(mode)})
+            except (OSError, ValueError) as exc:
+                raise HttpError(400, f"No se pudo crear el backup: {exc}")
+        if path == "/api/restore":
+            try:
+                return self._send_json(
+                    {
+                        "ok": True,
+                        "restore": self.application.restore_backup(
+                            str(data.get("path") or ""), force=bool(data.get("force"))
+                        ),
+                    }
+                )
+            except FileNotFoundError as exc:
+                raise HttpError(404, str(exc))
+            except (OSError, ValueError, xrepost_fs.UnsafePathError) as exc:
+                raise HttpError(400, f"No se pudo restaurar: {exc}")
+
+        if path == "/api/history/backup":
+            try:
+                return self._send_json({"ok": True, "backup": self.application.make_backup("history")})
+            except (OSError, ValueError) as exc:
+                raise HttpError(400, f"No se pudo crear el backup: {exc}")
+
+        raise HttpError(404, "Ruta no encontrada.")
+
+    # --- endpoints concretos ------------------------------------------------
     def _api_network_set(self, data: dict) -> None:
-        if not isinstance(data, dict):
-            raise HttpError(400, "Datos no válidos.")
         try:
             cfg = xrepost_network.save_config(data)
         except ValueError as exc:
@@ -1042,28 +1766,23 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
         self._send_json(network_status())
 
     def _api_network_restart(self) -> None:
-        with self.application.lock:
-            busy = bool(
-                self.application.current
-                and self.application.current.status == "running"
-            )
-        if busy:
+        if self.application.running():
             raise HttpError(409, "Hay una ejecución en curso. Espera antes de cambiar de red.")
         restart_chrome()
         self._send_json({"success": True, **network_status()})
 
     def _api_preview(self, data: dict) -> None:
         params = validate_repost_params(data, apply=False)
+        self.application.resolve_filters(params)
         params["key"] = params_key(params)
-        # Las cuentas quedan recordadas en cuanto se usan en una búsqueda,
-        # igual que en el CLI.
         self.application.record_accounts(params["users"])
         self.application.record_hashtags(params["quote"])
         job = self.application.start_job("preview", params)
-        self._send_json({"id": job.id}, 202)
+        self._send_json({"id": job.id, "state": job.state}, 202)
 
     def _api_apply(self, data: dict) -> None:
         params = validate_repost_params(data, apply=True)
+        self.application.resolve_filters(params)
         preview_id = str(data.get("preview_id", ""))
         preview = self.application.jobs.get(preview_id)
         if not preview or preview.kind != "preview":
@@ -1090,14 +1809,61 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
 
         preview.dir.mkdir(parents=True, exist_ok=True)
         selected = preview.dir / "selected.json"
-        selected.write_text(
-            json.dumps(chosen, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        xrepost_fs.write_json(selected, chosen)
         params["only_urls_file"] = str(selected)
         job = self.application.start_job("apply", params)
         job.params["preview_id"] = preview_id
-        self._send_json({"id": job.id}, 202)
+        self._send_json({"id": job.id, "state": job.state}, 202)
+
+    def _api_inbox_apply(self, data: dict) -> None:
+        ids = data.get("ids")
+        if ids is not None and (
+            not isinstance(ids, list) or not all(isinstance(item, (str, int)) for item in ids)
+        ):
+            raise HttpError(400, "Selección de bandeja no válida.")
+        selected = self.application.inbox.list(status=xrepost_inbox.APPROVED, limit=5000)
+        if ids:
+            wanted = {str(item) for item in ids}
+            selected = [item for item in selected if str(item.get("id")) in wanted]
+        if not selected:
+            raise HttpError(400, "No hay publicaciones aprobadas para ejecutar.")
+
+        searches = [item.get("search") or {} for item in selected]
+        base = dict(searches[0])
+        users = str(base.get("users") or "")
+        if not users:
+            users = ",".join(sorted({str(item.get("handle") or "") for item in selected if item.get("handle")}))
+        if not users:
+            raise HttpError(400, "Las publicaciones no tienen cuenta asociada.")
+        payload = {
+            "users": users,
+            "from": base.get("from") or "2006-01-01",
+            "to": base.get("to") or dt.date.today().isoformat(),
+            "scope": "all",
+            "limit": max(1, min(len(selected), 50)),
+            "delay": float(data.get("delay") or 20),
+            "quote": base.get("quote") or "",
+            "confirm": True,
+        }
+        params = validate_repost_params(payload, apply=True)
+        folder = xrepost_fs.ensure_dir(self.application.runs / f"inbox-{secrets.token_hex(4)}")
+        selected_file = folder / "selected.json"
+        rows = [
+            {
+                "fecha": item.get("date", ""),
+                "autor": item.get("author", ""),
+                "usuario": "@" + str(item.get("handle", "")),
+                "texto": item.get("text", ""),
+                "url": item.get("url", ""),
+                "estado": "aprobado",
+            }
+            for item in selected
+        ]
+        xrepost_fs.write_json(selected_file, rows)
+        params["only_urls_file"] = str(selected_file)
+        job = self.application.start_job("apply", params)
+        self.application.inbox.mark([str(item.get("id")) for item in selected], xrepost_inbox.QUEUED)
+        self._send_json({"id": job.id, "state": job.state, "count": len(selected)}, 202)
 
     def _api_undo(self, data: dict) -> None:
         mode = str(data.get("mode", ""))
@@ -1118,7 +1884,7 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
             raise HttpError(400, "Modo de deshacer no válido.")
 
         job = self.application.start_job("undo", params)
-        self._send_json({"id": job.id}, 202)
+        self._send_json({"id": job.id, "state": job.state}, 202)
 
     def _api_cancel(self) -> None:
         cancelled = self.application.cancel()
@@ -1133,6 +1899,59 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
         if not self.application.clear_hashtags():
             raise HttpError(500, "No se pudo borrar el historial de hashtags.")
         self._send_json({"ok": True})
+
+    def _api_export(self, data: dict) -> None:
+        fmt = str(data.get("format") or "csv").lower()
+        rows = data.get("rows")
+        if rows is None and data.get("job_id"):
+            job = self.application.jobs.get(str(data["job_id"]))
+            rows = job.posts if job else []
+        if rows is None:
+            rows = read_history(self.application.history, 200)
+        if not isinstance(rows, list):
+            raise HttpError(400, "Las filas de exportación no son válidas.")
+        clean = [row for row in rows if isinstance(row, dict)]
+        body, ctype, ext = self.application.export_rows(
+            clean, fmt, title=str(data.get("title") or "Informe de xrepost")
+        )
+        self._send_bytes(
+            body,
+            ctype,
+            extra={"Content-Disposition": f'attachment; filename="xrepost-export.{ext}"'},
+        )
+
+    def _api_validate_filter(self, data: dict) -> None:
+        try:
+            spec = xrepost_filters.normalize_spec(data.get("filters") or data)
+        except xrepost_filters.FilterError as exc:
+            raise HttpError(400, str(exc))
+        return self._send_json({"ok": True, "filters": spec, "env": xrepost_filters.to_env(spec)})
+
+    def _api_profile_save(self, data: dict) -> None:
+        try:
+            profile = self.application.profiles.save(
+                str(data.get("name") or ""),
+                data.get("filters") or {},
+                profile_id=str(data.get("id") or ""),
+            )
+        except xrepost_filters.FilterError as exc:
+            raise HttpError(400, str(exc))
+        return self._send_json({"ok": True, "profile": profile}, 201)
+
+    def _api_group_members(self, group_id: str, data: dict) -> None:
+        handles = data.get("handles") or data.get("members") or []
+        if not isinstance(handles, list):
+            raise HttpError(400, "Lista de cuentas no válida.")
+        try:
+            if data.get("action") == "remove":
+                group = self.application.groups.remove_members(group_id, handles)
+            else:
+                group = self.application.groups.add_members(group_id, handles)
+        except KeyError:
+            raise HttpError(404, "Grupo no encontrado.")
+        except ValueError as exc:
+            raise HttpError(400, str(exc))
+        return self._send_json({"ok": True, "group": group})
 
 
 def make_handler(app: App):
@@ -1193,6 +2012,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1", help="Interfaz de escucha (no la expongas a la red).")
     parser.add_argument("--token", default="", help="Token fijo (por defecto se genera uno aleatorio).")
     parser.add_argument(
+        "--token-file",
+        default="",
+        help="Archivo 0600 con el token (se crea si no existe). Evita el token en el log.",
+    )
+    parser.add_argument(
+        "--bootstrap-file",
+        default="",
+        help="Archivo 0600 donde escribir el enlace de arranque con token.",
+    )
+    parser.add_argument(
         "--engine",
         default=os.environ.get("XREPOST_ENGINE", str(DEFAULT_ENGINE)),
         help="Ruta a xrepost.sh.",
@@ -1214,7 +2043,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--runs", default=str(DEFAULT_RUNS), help="Carpeta de ejecuciones y exportaciones.")
     parser.add_argument("--no-open", action="store_true", help="No abrir el navegador automáticamente.")
-    parser.add_argument("--verbose", action="store_true", help="Registrar cada petición HTTP.")
+    parser.add_argument("--no-scheduler", action="store_true", help="No ejecutar la programación.")
+    parser.add_argument("--verbose", action="store_true", help="Registrar cada petición HTTP (sin secretos).")
     args = parser.parse_args(argv)
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
@@ -1225,16 +2055,28 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    token = args.token or secrets.token_urlsafe(18)
-    app = App(
-        engine=Path(args.engine),
-        history=Path(args.history),
-        runs=Path(args.runs),
-        accounts=Path(args.accounts) if args.accounts else None,
-        hashtags=Path(args.hashtags) if args.hashtags else None,
-        token=token,
-        verbose=args.verbose,
-    )
+    token = args.token
+    if not token and args.token_file:
+        token_path = Path(args.token_file).expanduser()
+        token = (xrepost_fs.read_text(token_path, default="") or "").strip()
+        if not token:
+            token = secrets.token_urlsafe(32)
+            xrepost_fs.atomic_write(token_path, token + "\n")
+    if not token:
+        token = secrets.token_urlsafe(32)
+    try:
+        app = App(
+            engine=Path(args.engine),
+            history=Path(args.history),
+            runs=Path(args.runs),
+            accounts=Path(args.accounts) if args.accounts else None,
+            hashtags=Path(args.hashtags) if args.hashtags else None,
+            token=token,
+            verbose=args.verbose,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
     ports = [args.port] if args.port == 0 else ([args.port] if args.port != 8765 else [8765, 8766, 8767, 8768, 8769])
     httpd: ThreadingHTTPServer | None = None
@@ -1249,16 +2091,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No se pudo abrir el puerto: {last_error}", file=sys.stderr)
         return 1
 
+    if not args.no_scheduler:
+        app.start_scheduler()
+
     port = httpd.server_address[1]
     url = f"http://127.0.0.1:{port}/?token={token}"
+    shown = url
+    if args.bootstrap_file:
+        xrepost_fs.atomic_write(Path(args.bootstrap_file).expanduser(), url + "\n")
+        shown = f"http://127.0.0.1:{port}/"
     print()
     print("  xrepost · panel local")
-    print(f"  Panel:     {url}")
+    print(f"  Panel:     {shown}")
     print(f"  Motor:     {app.engine}")
     print(f"  Historial: {app.history}")
     print(f"  Cuentas:   {app.accounts}")
     print(f"  Hashtags:  {app.hashtags}")
     print("  Solo escucha en 127.0.0.1. Ctrl-C para detener.")
+    print("  El enlace de arriba caduca en cuanto se abre: después se usa una sesión.")
     print()
 
     if not args.no_open:

@@ -158,7 +158,7 @@ class EngineSelectedTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_engine(self, limit=10, extra_env=None):
+    def run_engine(self, limit=10, extra_env=None, args=None):
         env = os.environ.copy()
         env.update(
             {
@@ -179,7 +179,7 @@ class EngineSelectedTest(unittest.TestCase):
         )
         env.update(extra_env or {})
         return subprocess.run(
-            [str(SH), "--csv", str(self.csv), "--md", str(self.md)],
+            [str(SH), "--csv", str(self.csv), "--md", str(self.md)] + list(args or []),
             cwd=str(ROOT),
             env=env,
             stdin=subprocess.DEVNULL,
@@ -389,9 +389,23 @@ class EngineSelectedTest(unittest.TestCase):
         self.assertEqual([e["result"] for e in events], ["quote_unverified"])
         self.assertIn("cita sin confirmar", result.stdout)
 
-        # Un segundo intento vuelve a visitar el post: no quedó bloqueado.
+        # Un segundo intento NO vuelve a visitar el post: quedó sin confirmar y
+        # reintentar a ciegas podría duplicar la cita. Solo --force lo reintenta.
         self.log.write_text("", encoding="utf-8")
         result = self.run_engine(extra_env={"X_QUOTE": "#ETECSA"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        visited = [
+            line[5:]
+            for line in self.log.read_text("utf-8").splitlines()
+            if line.startswith("GOTO ")
+        ]
+        self.assertEqual(visited, [])
+        self.assertIn("sin confirmar", result.stdout)
+
+        # Con --force el usuario asume el riesgo y se reintenta.
+        result = self.run_engine(
+            args=["--force"], extra_env={"X_QUOTE": "#ETECSA"}
+        )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         visited = [
             line[5:]

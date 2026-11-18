@@ -5,300 +5,735 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>xrepost · panel local</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f5b942'/%3E%3Cpath d='M18 22h28M18 32h20M18 42h28' stroke='%230b1020' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <meta name="description" content="Panel local de xrepost: previsualiza, revisa y repostea desde tu sesión de X.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%233B82F6'/%3E%3Cpath d='M18 22h28M18 32h20M18 42h28' stroke='%230B1220' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#main">Saltar al contenido principal</a>
+
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">x</span>
       <div>
         <h1>xrepost <span>panel local</span></h1>
-        <p>Previsualiza y repostea desde la sesión de X que ya controla el CLI.</p>
+        <p>Previsualiza, revisa y repostea desde la sesión de X que controla el CLI.</p>
       </div>
     </div>
-    <div class="chips" aria-label="Estado del entorno">
-      <span class="chip" id="chip-engine"><i class="dot"></i> Motor</span>
-      <span class="chip" id="chip-chrome"><i class="dot"></i> Chrome</span>
-      <span class="chip chip-quiet"><i class="dot"></i> Solo 127.0.0.1</span>
-    </div>
-    <div class="net-control" aria-label="Configuración de red">
-      <label for="network-mode">Red</label>
-      <select id="network-mode" title="Configuración de proxy de Chrome">
-        <option value="direct">Casa · sin proxy</option>
-        <option value="pac">Empresa · PAC</option>
-        <option value="auto">Automático · PAC</option>
-        <option value="server">Empresa · servidor</option>
-      </select>
-      <button id="network-apply" class="btn tiny" type="button" title="Reinicia Chrome con esta configuración">Aplicar</button>
-      <span id="network-note" class="muted" aria-live="polite"></span>
+    <div class="topbar-actions">
+      <div class="chips" aria-label="Estado del entorno">
+        <span class="chip" id="chip-engine"><i class="dot" aria-hidden="true"></i> Motor</span>
+        <span class="chip" id="chip-chrome"><i class="dot" aria-hidden="true"></i> Chrome</span>
+        <span class="chip" id="chip-cdp"><i class="dot" aria-hidden="true"></i> CDP</span>
+        <span class="chip chip-quiet" id="chip-session"><i class="dot" aria-hidden="true"></i> Sesión</span>
+      </div>
+      <button type="button" class="btn tiny ghost" id="theme-toggle" aria-pressed="false"
+              title="Cambiar entre tema claro y oscuro">
+        <span class="theme-icon" aria-hidden="true">◐</span>
+        <span id="theme-label">Tema claro</span>
+      </button>
     </div>
   </header>
 
-  <main class="layout">
-    <section class="card form-card" aria-labelledby="form-title">
-      <div class="card-head">
-        <div>
-          <h2 id="form-title">Nueva búsqueda</h2>
-          <p class="muted">Mismo motor y mismas reglas que <code>./xrepost.sh</code>.</p>
-        </div>
+  <nav class="tabs" role="tablist" aria-label="Secciones del panel">
+    <button type="button" class="tab" role="tab" id="tab-search" data-tab="search"
+            aria-controls="panel-search" aria-selected="true">Buscar y repostear</button>
+    <button type="button" class="tab" role="tab" id="tab-inbox" data-tab="inbox"
+            aria-controls="panel-inbox" aria-selected="false" tabindex="-1">
+      Bandeja <span class="tab-count" id="inbox-tab-count" hidden>0</span>
+    </button>
+    <button type="button" class="tab" role="tab" id="tab-accounts" data-tab="accounts"
+            aria-controls="panel-accounts" aria-selected="false" tabindex="-1">Cuentas</button>
+    <button type="button" class="tab" role="tab" id="tab-filters" data-tab="filters"
+            aria-controls="panel-filters" aria-selected="false" tabindex="-1">Filtros</button>
+    <button type="button" class="tab" role="tab" id="tab-schedule" data-tab="schedule"
+            aria-controls="panel-schedule" aria-selected="false" tabindex="-1">Programación</button>
+    <button type="button" class="tab" role="tab" id="tab-history" data-tab="history"
+            aria-controls="panel-history" aria-selected="false" tabindex="-1">Historial</button>
+    <button type="button" class="tab" role="tab" id="tab-stats" data-tab="stats"
+            aria-controls="panel-stats" aria-selected="false" tabindex="-1">Estadísticas</button>
+    <button type="button" class="tab" role="tab" id="tab-system" data-tab="system"
+            aria-controls="panel-system" aria-selected="false" tabindex="-1">Sistema</button>
+  </nav>
+
+  <main id="main" class="app" tabindex="-1">
+    <!-- ============================ BUSCAR ============================ -->
+    <section class="panel" id="panel-search" role="tabpanel" aria-labelledby="tab-search">
+      <div class="layout">
+        <section class="card form-card" aria-labelledby="form-title">
+          <div class="card-head">
+            <div>
+              <h2 id="form-title">Nueva búsqueda</h2>
+              <p class="muted">Mismas reglas y mismo motor que <code>./xrepost.sh</code>.</p>
+            </div>
+            <span class="step-badge" aria-hidden="true">1 · Revisar</span>
+          </div>
+
+          <form id="search-form" autocomplete="off">
+            <div class="field">
+              <label class="field-label" for="users">Cuentas</label>
+              <div class="combo" id="users-combo">
+                <input id="users" name="users" type="text" placeholder="@cuenta1, @cuenta2"
+                       spellcheck="false" autocapitalize="off" autocomplete="off" required
+                       role="combobox" aria-autocomplete="list" aria-expanded="false"
+                       aria-controls="users-list" aria-describedby="users-help">
+                <button type="button" class="combo-clear" id="users-clear"
+                        aria-label="Borrar el historial de cuentas guardadas"
+                        title="Borrar el historial de cuentas guardadas">
+                  <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+                       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 6h18"></path><path d="M8 6V4h8v2"></path>
+                    <path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v5M14 11v5"></path>
+                  </svg>
+                </button>
+                <ul id="users-list" class="combo-list" role="listbox" aria-label="Cuentas usadas antes" hidden></ul>
+              </div>
+              <small id="users-help">Separadas por coma. La @ es opcional; las cuentas usadas antes se sugieren al escribir.</small>
+            </div>
+
+            <div class="field">
+              <label class="field-label" for="quote">Hashtag de la cita (opcional)</label>
+              <div class="combo" id="quote-combo">
+                <input id="quote" name="quote" type="text" placeholder="#ETECSA"
+                       spellcheck="false" autocapitalize="off" autocomplete="off"
+                       role="combobox" aria-autocomplete="list" aria-expanded="false"
+                       aria-controls="quote-list" aria-describedby="quote-help">
+                <button type="button" class="combo-clear" id="quote-clear"
+                        aria-label="Borrar el historial de hashtags guardados"
+                        title="Borrar el historial de hashtags guardados">
+                  <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+                       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 6h18"></path><path d="M8 6V4h8v2"></path>
+                    <path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v5M14 11v5"></path>
+                  </svg>
+                </button>
+                <ul id="quote-list" class="combo-list" role="listbox" aria-label="Hashtags usados antes" hidden></ul>
+              </div>
+              <small id="quote-preview" class="quote-preview" hidden></small>
+              <small id="quote-help">Si lo escribes, cada repost se publica como cita con ese comentario.</small>
+            </div>
+
+            <div class="grid2">
+              <div class="field">
+                <label class="field-label" for="from">Desde</label>
+                <div class="date-field">
+                  <input id="from" name="from" type="text" inputmode="numeric" maxlength="10"
+                         placeholder="DD/MM/AAAA" autocomplete="off" required
+                         aria-describedby="date-help from-error">
+                  <button type="button" class="date-pick" data-pick="from"
+                          aria-label="Elegir la fecha desde en el calendario" title="Abrir calendario">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+                         stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <rect x="3" y="5" width="18" height="16" rx="2"></rect>
+                      <path d="M16 3v4M8 3v4M3 11h18"></path>
+                    </svg>
+                  </button>
+                  <input id="from-native" class="date-native" type="date" tabindex="-1" aria-hidden="true">
+                </div>
+                <small class="date-error" id="from-error" hidden></small>
+              </div>
+              <div class="field">
+                <label class="field-label" for="to">Hasta</label>
+                <div class="date-field">
+                  <input id="to" name="to" type="text" inputmode="numeric" maxlength="10"
+                         placeholder="DD/MM/AAAA" autocomplete="off" required
+                         aria-describedby="date-help to-error">
+                  <button type="button" class="date-pick" data-pick="to"
+                          aria-label="Elegir la fecha hasta en el calendario" title="Abrir calendario">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+                         stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <rect x="3" y="5" width="18" height="16" rx="2"></rect>
+                      <path d="M16 3v4M8 3v4M3 11h18"></path>
+                    </svg>
+                  </button>
+                  <input id="to-native" class="date-native" type="date" tabindex="-1" aria-hidden="true">
+                </div>
+                <small class="date-error" id="to-error" hidden></small>
+              </div>
+            </div>
+            <small id="date-help" class="date-help">Formato día/mes/año (DD/MM/AAAA). Las barras salen solas.</small>
+
+            <fieldset class="scope">
+              <legend>Alcance de las publicaciones</legend>
+              <label class="choice">
+                <input type="radio" name="scope" value="originals" checked>
+                <span>
+                  <strong>Solo publicaciones originales</strong>
+                  <small>Omite los retweets que estas cuentas hayan hecho de otras cuentas.</small>
+                </span>
+              </label>
+              <label class="choice">
+                <input type="radio" name="scope" value="all">
+                <span>
+                  <strong>Incluir retweets de otras cuentas</strong>
+                  <small>Al repostear se abre la publicación original, no el retweet.</small>
+                </span>
+              </label>
+            </fieldset>
+
+            <details class="advanced">
+              <summary>Opciones avanzadas</summary>
+              <div class="grid2">
+                <label class="field">
+                  <span>Máximo de reposts</span>
+                  <input id="limit" name="limit" type="number" min="1" max="50" step="1" value="10">
+                </label>
+                <label class="field">
+                  <span>Pausa entre reposts (s)</span>
+                  <input id="delay" name="delay" type="number" min="5" max="300" step="1" value="20">
+                </label>
+              </div>
+              <div class="grid2">
+                <label class="field">
+                  <span>Incluir palabras</span>
+                  <input id="match" name="match" type="text" placeholder="kubernetes, cloud">
+                </label>
+                <label class="field">
+                  <span>Excluir palabras</span>
+                  <input id="exclude" name="exclude" type="text" placeholder="empleo, oferta">
+                </label>
+              </div>
+              <label class="field">
+                <span>Perfil de filtros</span>
+                <select id="profile-select" name="profile_id">
+                  <option value="">Sin perfil (solo los filtros de arriba)</option>
+                </select>
+                <small id="profile-help">Los perfiles se crean en la pestaña Filtros y se aplican en el motor.</small>
+              </label>
+            </details>
+
+            <div class="actions">
+              <button type="submit" class="btn primary" id="preview-btn">
+                <span class="btn-label">Previsualizar</span>
+              </button>
+              <button type="button" class="btn danger" id="apply-btn" disabled>Repostear…</button>
+              <button type="button" class="btn ghost" id="cancel-btn" hidden>Cancelar</button>
+            </div>
+            <p class="hint">La previsualización no escribe en tu cuenta. Repostear solo se habilita tras revisar el listado y confirmar.</p>
+          </form>
+        </section>
+
+        <section class="card result-card" aria-labelledby="result-title">
+          <div class="card-head">
+            <div>
+              <h2 id="result-title">Publicaciones</h2>
+              <p class="muted" id="result-sub">Previsualiza para ver el listado.</p>
+            </div>
+            <div class="exports" id="exports" hidden>
+              <a class="btn tiny" id="export-csv" href="#" download>CSV</a>
+              <a class="btn tiny" id="export-md" href="#" download>Markdown</a>
+              <a class="btn tiny" id="export-json" href="#" download>JSON</a>
+              <a class="btn tiny" id="export-html" href="#" download>HTML</a>
+              <a class="btn tiny" id="export-pdf" href="#" download>PDF</a>
+            </div>
+          </div>
+
+          <div class="job-panel" id="job-panel" hidden aria-live="polite">
+            <div class="job-line">
+              <span class="spinner" id="job-spinner" aria-hidden="true"></span>
+              <strong id="job-status-text">Ejecutando…</strong>
+              <span class="muted" id="job-elapsed"></span>
+              <button type="button" class="btn tiny ghost" id="job-cancel">Cancelar</button>
+            </div>
+            <div class="job-progress" id="job-progress" hidden>
+              <div class="job-progress-track" aria-hidden="true"><span id="job-progress-bar"></span></div>
+              <span class="muted" id="job-progress-text"></span>
+            </div>
+            <details class="log-box" id="log-box">
+              <summary>Registro del motor</summary>
+              <pre id="job-log" class="log"></pre>
+            </details>
+          </div>
+
+          <div class="empty" id="empty">
+            <div class="empty-icon" aria-hidden="true">⌕</div>
+            <p>Escribe una cuenta y un rango de fechas para ver qué publicó.</p>
+            <p class="muted">Nada se repostea hasta que lo confirmes.</p>
+          </div>
+
+          <div class="table-tools" id="table-tools" hidden>
+            <input type="search" id="posts-filter" placeholder="Filtrar por texto o cuenta…"
+                   aria-label="Filtrar publicaciones">
+            <select id="posts-sort" aria-label="Ordenar publicaciones">
+              <option value="date-desc">Más recientes primero</option>
+              <option value="date-asc">Más antiguas primero</option>
+              <option value="author">Por cuenta (A–Z)</option>
+            </select>
+            <span class="muted" id="posts-count"></span>
+          </div>
+
+          <div class="table-wrap" id="table-wrap" hidden>
+            <table class="posts">
+              <thead>
+                <tr>
+                  <th class="pick" id="pick-th" hidden>
+                    <input type="checkbox" id="pick-all" checked
+                           aria-label="Seleccionar todas las publicaciones" title="Seleccionar todas">
+                  </th>
+                  <th>Fecha</th>
+                  <th>Autor</th>
+                  <th>Publicación</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody id="posts-body"></tbody>
+            </table>
+          </div>
+
+          <div class="result-foot" id="result-foot" hidden>
+            <span class="muted" id="apply-note"></span>
+          </div>
+        </section>
       </div>
+    </section>
 
-      <form id="search-form" autocomplete="off">
-        <div class="field">
-          <label class="field-label" for="users">Cuentas</label>
-          <div class="combo" id="users-combo">
-            <input id="users" name="users" type="text" placeholder="@cuenta1, @cuenta2"
-                   spellcheck="false" autocapitalize="off" autocomplete="off" required
-                   role="combobox" aria-autocomplete="list" aria-expanded="false"
-                   aria-controls="users-list" aria-describedby="users-help">
-            <button type="button" class="combo-clear" id="users-clear"
-                    aria-label="Borrar el historial de cuentas guardadas"
-                    title="Borrar el historial de cuentas guardadas">
-              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
-                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M3 6h18"></path>
-                <path d="M8 6V4h8v2"></path>
-                <path d="M19 6l-1 14H6L5 6"></path>
-                <path d="M10 11v5M14 11v5"></path>
-              </svg>
-            </button>
-            <ul id="users-list" class="combo-list" role="listbox" aria-label="Cuentas usadas antes" hidden></ul>
+    <!-- ============================ BANDEJA ============================ -->
+    <section class="panel" id="panel-inbox" role="tabpanel" aria-labelledby="tab-inbox" hidden>
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Bandeja de revisión</h2>
+            <p class="muted">Cada resultado de una previsualización llega aquí. Aprueba por separado antes de ejecutar; nada se publica solo.</p>
           </div>
-          <small id="users-help">Separadas por coma. La @ es opcional; las cuentas usadas antes se sugieren al escribir.</small>
-        </div>
-
-        <div class="field">
-          <label class="field-label" for="quote">Hashtag de la cita (opcional)</label>
-          <div class="combo" id="quote-combo">
-            <input id="quote" name="quote" type="text" placeholder="#ETECSA"
-                   spellcheck="false" autocapitalize="off" autocomplete="off"
-                   role="combobox" aria-autocomplete="list" aria-expanded="false"
-                   aria-controls="quote-list" aria-describedby="quote-help">
-            <button type="button" class="combo-clear" id="quote-clear"
-                    aria-label="Borrar el historial de hashtags guardados"
-                    title="Borrar el historial de hashtags guardados">
-              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
-                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M3 6h18"></path>
-                <path d="M8 6V4h8v2"></path>
-                <path d="M19 6l-1 14H6L5 6"></path>
-                <path d="M10 11v5M14 11v5"></path>
-              </svg>
-            </button>
-            <ul id="quote-list" class="combo-list" role="listbox" aria-label="Hashtags usados antes" hidden></ul>
-          </div>
-          <small id="quote-preview" class="quote-preview" hidden></small>
-          <small id="quote-help">Si lo escribes, cada repost se publica como cita con ese comentario. Separa varios hashtags con comas o espacios; los usados antes se sugieren al escribir.</small>
-        </div>
-
-        <div class="grid2">
-          <div class="field">
-            <label class="field-label" for="from">Desde</label>
-            <div class="date-field">
-              <input id="from" name="from" type="text" inputmode="numeric" maxlength="10"
-                     placeholder="DD/MM/AAAA" autocomplete="off" required
-                     aria-describedby="date-help from-error">
-              <button type="button" class="date-pick" data-pick="from"
-                      aria-label="Elegir la fecha desde en el calendario" title="Abrir calendario">
-                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
-                     stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <rect x="3" y="5" width="18" height="16" rx="2"></rect>
-                  <path d="M16 3v4M8 3v4M3 11h18"></path>
-                </svg>
-              </button>
-              <input id="from-native" class="date-native" type="date" tabindex="-1" aria-hidden="true">
-            </div>
-            <small class="date-error" id="from-error" hidden></small>
-          </div>
-          <div class="field">
-            <label class="field-label" for="to">Hasta</label>
-            <div class="date-field">
-              <input id="to" name="to" type="text" inputmode="numeric" maxlength="10"
-                     placeholder="DD/MM/AAAA" autocomplete="off" required
-                     aria-describedby="date-help to-error">
-              <button type="button" class="date-pick" data-pick="to"
-                      aria-label="Elegir la fecha hasta en el calendario" title="Abrir calendario">
-                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
-                     stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <rect x="3" y="5" width="18" height="16" rx="2"></rect>
-                  <path d="M16 3v4M8 3v4M3 11h18"></path>
-                </svg>
-              </button>
-              <input id="to-native" class="date-native" type="date" tabindex="-1" aria-hidden="true">
-            </div>
-            <small class="date-error" id="to-error" hidden></small>
+          <div class="actions compact">
+            <button type="button" class="btn tiny" id="inbox-apply" disabled>Aplicar aprobadas</button>
+            <label class="btn tiny ghost file-btn">
+              Importar JSON
+              <input type="file" id="inbox-import-file" accept="application/json,.json" hidden>
+            </label>
+            <button type="button" class="btn tiny ghost" id="inbox-refresh">Actualizar</button>
           </div>
         </div>
-        <small id="date-help" class="date-help">Formato día/mes/año (DD/MM/AAAA). Escríbelo o elígelo en el calendario; las barras salen solas.</small>
-
-        <fieldset class="scope">
-          <legend>Alcance de las publicaciones</legend>
-          <label class="choice">
-            <input type="radio" name="scope" value="originals" checked>
-            <span>
-              <strong>Solo publicaciones originales</strong>
-              <small>Omite los retweets que estas cuentas hayan hecho de otras cuentas.</small>
-            </span>
+        <div class="toolbar">
+          <label class="inline-field">Estado
+            <select id="inbox-status">
+              <option value="">Todos</option>
+              <option value="pending">Pendientes</option>
+              <option value="approved">Aprobadas</option>
+              <option value="rejected">Rechazadas</option>
+              <option value="queued">En cola</option>
+              <option value="executed">Ejecutadas</option>
+              <option value="verified">Verificadas</option>
+              <option value="unconfirmed">Sin confirmar</option>
+              <option value="failed">Fallidas</option>
+            </select>
           </label>
-          <label class="choice">
-            <input type="radio" name="scope" value="all">
-            <span>
-              <strong>Incluir retweets de otras cuentas</strong>
-              <small>Al repostear se abre la publicación original, no el retweet.</small>
-            </span>
-          </label>
-        </fieldset>
+          <input type="search" id="inbox-filter" placeholder="Filtrar texto, cuenta o URL…" aria-label="Filtrar bandeja">
+          <span class="muted" id="inbox-counts" aria-live="polite"></span>
+        </div>
+        <div class="bulk-bar" id="inbox-bulk" hidden>
+          <label class="check-inline"><input type="checkbox" id="inbox-select-all"> Seleccionar todo</label>
+          <button type="button" class="btn tiny" id="inbox-approve">Aprobar</button>
+          <button type="button" class="btn tiny danger-ghost" id="inbox-reject">Rechazar</button>
+          <button type="button" class="btn tiny ghost" id="inbox-reset">Devolver a pendientes</button>
+          <span class="muted" id="inbox-selected"></span>
+        </div>
+        <div class="empty" id="inbox-empty">
+          <p>La bandeja está vacía.</p>
+          <p class="muted">Haz una previsualización para llenarla con resultados revisables.</p>
+        </div>
+        <div class="table-wrap" id="inbox-wrap" hidden>
+          <table class="inbox">
+            <thead>
+              <tr>
+                <th class="pick"><input type="checkbox" id="inbox-check-all" aria-label="Seleccionar todas"></th>
+                <th>Fecha</th>
+                <th>Cuenta</th>
+                <th>Publicación</th>
+                <th>Estado</th>
+                <th>Decisión</th>
+              </tr>
+            </thead>
+            <tbody id="inbox-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
 
-        <details class="advanced">
-          <summary>Opciones avanzadas</summary>
-          <div class="grid2">
+    <!-- ============================ CUENTAS ============================ -->
+    <section class="panel" id="panel-accounts" role="tabpanel" aria-labelledby="tab-accounts" hidden>
+      <div class="layout even">
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>Cuentas recordadas</h2>
+              <p class="muted">Alias y favoritos propios; el historial de X no se modifica.</p>
+            </div>
+            <button type="button" class="btn tiny ghost" id="accounts-refresh">Actualizar</button>
+          </div>
+          <div class="toolbar">
+            <input type="search" id="accounts-filter" placeholder="Filtrar cuentas…" aria-label="Filtrar cuentas">
+            <span class="muted" id="accounts-count"></span>
+          </div>
+          <div class="empty small" id="accounts-empty">
+            <p>Aún no hay cuentas recordadas.</p>
+            <p class="muted">Se guardan al previsualizar o repostear.</p>
+          </div>
+          <div class="table-wrap" id="accounts-wrap" hidden>
+            <table class="accounts">
+              <thead>
+                <tr><th>Cuenta</th><th>Alias</th><th>Favorita</th><th>Actividad</th><th></th></tr>
+              </thead>
+              <tbody id="accounts-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>Grupos</h2>
+              <p class="muted">Agrupa cuentas para reutilizarlas en la búsqueda.</p>
+            </div>
+            <button type="button" class="btn tiny ghost" id="groups-refresh">Actualizar</button>
+          </div>
+          <form id="group-form" class="stack" autocomplete="off">
             <label class="field">
-              <span>Máximo de reposts</span>
-              <input id="limit" name="limit" type="number" min="1" max="50" step="1" value="10">
+              <span>Nombre del grupo</span>
+              <input id="group-name" type="text" maxlength="60" required placeholder="Medios de Cuba">
             </label>
             <label class="field">
-              <span>Pausa entre reposts (s)</span>
-              <input id="delay" name="delay" type="number" min="5" max="300" step="1" value="20">
+              <span>Descripción</span>
+              <input id="group-description" type="text" maxlength="200" placeholder="Opcional">
+            </label>
+            <label class="field">
+              <span>Cuentas (separadas por coma)</span>
+              <textarea id="group-members" rows="2" placeholder="@cuenta1, @cuenta2"></textarea>
+            </label>
+            <div class="actions">
+              <button type="submit" class="btn primary tiny">Crear grupo</button>
+              <span class="muted" id="group-status" aria-live="polite"></span>
+            </div>
+          </form>
+          <div class="empty small" id="groups-empty"><p>Todavía no hay grupos.</p></div>
+          <div id="groups-list" class="stack" hidden></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ============================ FILTROS ============================ -->
+    <section class="panel" id="panel-filters" role="tabpanel" aria-labelledby="tab-filters" hidden>
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Perfiles de filtros</h2>
+            <p class="muted">Un perfil agrupa criterios y se aplica igual en el panel y en el motor. Las expresiones regulares se validan antes de guardarse.</p>
+          </div>
+          <div class="actions compact">
+            <select id="profile-list" aria-label="Perfiles guardados">
+              <option value="">Nuevo perfil…</option>
+            </select>
+            <button type="button" class="btn tiny ghost" id="profile-new">Nuevo</button>
+            <button type="button" class="btn tiny ghost" id="profile-duplicate">Duplicar</button>
+            <button type="button" class="btn tiny danger-ghost" id="profile-delete">Borrar</button>
+          </div>
+        </div>
+
+        <form id="profile-form" class="stack" autocomplete="off">
+          <div class="grid2">
+            <label class="field">
+              <span>Nombre del perfil</span>
+              <input id="profile-name" type="text" maxlength="80" required placeholder="Solo castellano con imagen">
+            </label>
+            <label class="field">
+              <span>Idioma (ISO, coma)</span>
+              <input id="f-lang" type="text" placeholder="es, en">
             </label>
           </div>
           <div class="grid2">
             <label class="field">
               <span>Incluir palabras</span>
-              <input id="match" name="match" type="text" placeholder="kubernetes, cloud">
+              <input id="f-include" type="text" placeholder="cuba, energía">
             </label>
             <label class="field">
               <span>Excluir palabras</span>
-              <input id="exclude" name="exclude" type="text" placeholder="empleo, oferta">
+              <input id="f-exclude" type="text" placeholder="empleo, sorteo">
             </label>
           </div>
-        </details>
-
-        <div class="actions">
-          <button type="submit" class="btn primary" id="preview-btn">
-            <span class="btn-label">Previsualizar</span>
-          </button>
-          <button type="button" class="btn danger" id="apply-btn" disabled>
-            Repostear…
-          </button>
-          <button type="button" class="btn ghost" id="cancel-btn" hidden>Cancelar</button>
-        </div>
-        <p class="hint">La previsualización no escribe en tu cuenta. Repostear solo se habilita después de revisar el listado y confirmar.</p>
-      </form>
+          <div class="grid2">
+            <label class="field">
+              <span>Coincidencia exacta</span>
+              <input id="f-exact" type="text" placeholder="frase exacta">
+            </label>
+            <label class="field">
+              <span>Hashtags obligatorios</span>
+              <input id="f-hashtags" type="text" placeholder="cuba, etecsa">
+            </label>
+          </div>
+          <div class="grid2">
+            <label class="field">
+              <span>Expresión regular</span>
+              <input id="f-regex" type="text" placeholder="\\b(energía|apagón)\\b" spellcheck="false">
+            </label>
+            <label class="field">
+              <span>Expresión regular a excluir</span>
+              <input id="f-exclude-regex" type="text" placeholder="sorteo|promo" spellcheck="false">
+            </label>
+          </div>
+          <div class="grid4">
+            <label class="field">
+              <span>Longitud mínima</span>
+              <input id="f-min-len" type="number" min="0" max="10000" step="1" value="0">
+            </label>
+            <label class="field">
+              <span>Longitud máxima</span>
+              <input id="f-max-len" type="number" min="0" max="10000" step="1" value="0">
+            </label>
+            <label class="field">
+              <span>Multimedia</span>
+              <select id="f-media">
+                <option value="">Indiferente</option>
+                <option value="yes">Con multimedia</option>
+                <option value="no">Sin multimedia</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Vídeo</span>
+              <select id="f-video">
+                <option value="">Indiferente</option>
+                <option value="yes">Con vídeo</option>
+                <option value="no">Sin vídeo</option>
+              </select>
+            </label>
+          </div>
+          <label class="field">
+            <span>Tipo de publicación</span>
+            <select id="f-kind">
+              <option value="">Cualquiera</option>
+              <option value="original">Solo originales</option>
+              <option value="reply">Solo respuestas</option>
+              <option value="retweet">Solo retweets</option>
+            </select>
+          </label>
+          <div class="actions">
+            <button type="submit" class="btn primary tiny" id="profile-save">Guardar perfil</button>
+            <label class="btn tiny ghost file-btn">
+              Importar JSON
+              <input type="file" id="profile-import-file" accept="application/json,.json" hidden>
+            </label>
+            <a class="btn tiny ghost" id="profile-export" href="#" download>Exportar JSON</a>
+            <span class="muted" id="filter-status" aria-live="polite"></span>
+          </div>
+        </form>
+      </section>
     </section>
 
-    <section class="card result-card" aria-labelledby="result-title">
-      <div class="card-head">
-        <div>
-          <h2 id="result-title">Publicaciones</h2>
-          <p class="muted" id="result-sub">Previsualiza para ver el listado.</p>
+    <!-- ========================== PROGRAMACIÓN ========================== -->
+    <section class="panel" id="panel-schedule" role="tabpanel" aria-labelledby="tab-schedule" hidden>
+      <div class="layout even">
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>Nueva programación</h2>
+              <p class="muted">Solo ejecuta previsualizaciones: repostear siempre exige revisión y confirmación humana.</p>
+            </div>
+          </div>
+          <form id="schedule-form" class="stack" autocomplete="off">
+            <label class="field">
+              <span>Nombre</span>
+              <input id="schedule-name" type="text" maxlength="80" required placeholder="Resumen diario de medios">
+            </label>
+            <div class="grid2">
+              <label class="field">
+                <span>Frecuencia</span>
+                <select id="schedule-frequency">
+                  <option value="once">Una vez</option>
+                  <option value="daily">Cada día</option>
+                  <option value="weekly">Cada semana</option>
+                  <option value="monthly">Cada mes</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Primera ejecución</span>
+                <input id="schedule-run-at" type="datetime-local" required>
+              </label>
+            </div>
+            <p class="muted small">Usa los datos de la pestaña «Buscar» (cuentas, fechas, cita y filtros).</p>
+            <label class="check-inline"><input type="checkbox" id="schedule-enabled" checked> Activa</label>
+            <label class="check-inline"><input type="checkbox" id="schedule-notify" checked> Avisar en el panel al ejecutar</label>
+            <div class="actions">
+              <button type="submit" class="btn primary tiny" id="schedule-create">Programar</button>
+              <span class="muted" id="schedule-status" aria-live="polite"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>Programaciones</h2>
+              <p class="muted">El planificador del servidor las ejecuta mientras el panel esté abierto.</p>
+            </div>
+            <button type="button" class="btn tiny ghost" id="schedule-refresh">Actualizar</button>
+          </div>
+          <div class="empty small" id="schedule-empty"><p>No hay programaciones.</p></div>
+          <div id="schedule-list" class="stack" hidden></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ============================ HISTORIAL =========================== -->
+    <section class="panel" id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden>
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Historial</h2>
+            <p class="muted">Reposts y deshaceres reales. Solo se deshace lo que hizo la herramienta.</p>
+          </div>
+          <div class="actions compact">
+            <input type="search" id="history-filter" class="history-filter"
+                   placeholder="Filtrar historial…" aria-label="Filtrar historial">
+            <button type="button" class="btn tiny ghost" id="refresh-history">Actualizar</button>
+            <button type="button" class="btn tiny ghost" id="history-diagnostic">Diagnóstico</button>
+            <button type="button" class="btn tiny danger-ghost" id="undo-last">Deshacer última tanda</button>
+          </div>
         </div>
-        <div class="exports" id="exports" hidden>
-          <a class="btn tiny" id="export-csv" href="#" download>CSV</a>
-          <a class="btn tiny" id="export-md" href="#" download>Markdown</a>
+
+        <div class="diagnostic-box" id="history-diag-box" hidden aria-live="polite"></div>
+
+        <div class="empty small" id="history-empty">
+          <p>Todavía no hay movimientos registrados.</p>
+          <p class="muted">El historial se crea con el primer repost real.</p>
         </div>
-      </div>
 
-      <div class="job-panel" id="job-panel" hidden aria-live="polite">
-        <div class="job-line">
-          <span class="spinner" id="job-spinner" aria-hidden="true"></span>
-          <strong id="job-status-text">Ejecutando…</strong>
-          <span class="muted" id="job-elapsed"></span>
-          <button type="button" class="btn tiny ghost" id="job-cancel">Cancelar</button>
+        <div class="table-wrap" id="history-wrap" hidden>
+          <table class="history">
+            <thead>
+              <tr>
+                <th>Cuándo</th><th>Acción</th><th>Resultado</th><th>Cuenta</th><th>Publicación</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
         </div>
-        <div class="job-progress" id="job-progress" hidden>
-          <div class="job-progress-track" aria-hidden="true"><span id="job-progress-bar"></span></div>
-          <span class="muted" id="job-progress-text"></span>
+        <div class="history-more">
+          <button type="button" class="btn tiny ghost" id="history-more" hidden>Cargar más</button>
         </div>
-        <details class="log-box" id="log-box">
-          <summary>Registro del motor</summary>
-          <pre id="job-log" class="log"></pre>
-        </details>
-      </div>
+      </section>
+    </section>
 
-      <div class="empty" id="empty">
-        <div class="empty-icon" aria-hidden="true">⌕</div>
-        <p>Escribe una cuenta y un rango de fechas para ver qué publicó.</p>
-        <p class="muted">Nada se repostea hasta que lo confirmes.</p>
-      </div>
+    <!-- ========================== ESTADÍSTICAS ========================== -->
+    <section class="panel" id="panel-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Estadísticas</h2>
+            <p class="muted">Calculadas desde el historial, los trabajos y la bandeja. Los resultados sin confirmar nunca cuentan como éxito.</p>
+          </div>
+          <div class="actions compact">
+            <label class="inline-field">Periodo
+              <select id="stats-range">
+                <option value="7">7 días</option>
+                <option value="30" selected>30 días</option>
+                <option value="90">90 días</option>
+                <option value="365">365 días</option>
+              </select>
+            </label>
+            <button type="button" class="btn tiny ghost" id="stats-refresh">Actualizar</button>
+          </div>
+        </div>
+        <div class="kpis" id="stats-kpis" aria-live="polite"></div>
+        <div class="grid2 stats-grid">
+          <div class="subcard">
+            <h3>Actividad diaria</h3>
+            <div class="chart" id="stats-chart" role="img" aria-label="Gráfico de actividad diaria"></div>
+          </div>
+          <div class="subcard">
+            <h3>Resumen</h3>
+            <dl class="summary" id="stats-summary"></dl>
+          </div>
+        </div>
+        <div class="subcard">
+          <h3>Por cuenta</h3>
+          <div class="table-wrap">
+            <table class="stats">
+              <thead><tr><th>Cuenta</th><th>Reposts</th><th>Citas</th><th>Deshechos</th><th>Fallos</th><th>Sin confirmar</th><th>Último</th></tr></thead>
+              <tbody id="stats-accounts"></tbody>
+            </table>
+          </div>
+          <div class="empty small" id="stats-accounts-empty"><p>Sin actividad todavía.</p></div>
+        </div>
+      </section>
+    </section>
 
-      <div class="table-tools" id="table-tools" hidden>
-        <input type="search" id="posts-filter" placeholder="Filtrar por texto o cuenta…"
-               aria-label="Filtrar publicaciones">
-        <select id="posts-sort" aria-label="Ordenar publicaciones">
-          <option value="date-desc">Más recientes primero</option>
-          <option value="date-asc">Más antiguas primero</option>
-          <option value="author">Por cuenta (A–Z)</option>
-        </select>
-        <span class="muted" id="posts-count"></span>
-      </div>
+    <!-- ============================ SISTEMA ============================ -->
+    <section class="panel" id="panel-system" role="tabpanel" aria-labelledby="tab-system" hidden>
+      <div class="layout even">
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>Red y sesión</h2>
+              <p class="muted">El panel solo escucha en 127.0.0.1. La sesión caduca por inactividad.</p>
+            </div>
+          </div>
+          <div class="stack">
+            <div class="inline-card">
+              <label class="inline-field">Proxy de Chrome
+                <select id="network-mode">
+                  <option value="direct">Casa · sin proxy</option>
+                  <option value="pac">Empresa · PAC</option>
+                  <option value="auto">Automático · PAC</option>
+                  <option value="server">Empresa · servidor</option>
+                </select>
+              </label>
+              <button type="button" class="btn tiny" id="network-apply">Aplicar y reiniciar Chrome</button>
+              <span id="network-note" class="muted" aria-live="polite"></span>
+            </div>
+            <div class="inline-card">
+              <div>
+                <strong>Sesión del panel</strong>
+                <p class="muted small" id="session-info">Comprobando…</p>
+              </div>
+              <div class="actions compact">
+                <button type="button" class="btn tiny ghost" id="session-rotate">Rotar sesión</button>
+                <button type="button" class="btn tiny danger-ghost" id="session-logout">Cerrar sesión</button>
+              </div>
+            </div>
+            <div class="inline-card">
+              <div>
+                <strong>Copias de seguridad</strong>
+                <p class="muted small" id="backup-status">Sin copias listadas.</p>
+              </div>
+              <div class="actions compact">
+                <button type="button" class="btn tiny" id="backup-create">Backup del historial</button>
+                <button type="button" class="btn tiny ghost" id="backup-bundle">Backup completo</button>
+              </div>
+            </div>
+            <div class="table-wrap" id="backups-wrap" hidden>
+              <table class="backups">
+                <thead><tr><th>Archivo</th><th>Creado</th><th>Tamaño</th><th></th></tr></thead>
+                <tbody id="backups-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
 
-      <div class="table-wrap" id="table-wrap" hidden>
-        <table class="posts">
-          <thead>
-            <tr>
-              <th class="pick" id="pick-th" hidden>
-                <input type="checkbox" id="pick-all" checked
-                       aria-label="Seleccionar todas las publicaciones" title="Seleccionar todas">
-              </th>
-              <th>Fecha</th>
-              <th>Autor</th>
-              <th>Publicación</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody id="posts-body"></tbody>
-        </table>
-      </div>
-
-      <div class="result-foot" id="result-foot" hidden>
-        <span class="muted" id="apply-note"></span>
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>Diagnóstico</h2>
+              <p class="muted">Estado real del motor, CDP, historial y almacenamiento.</p>
+            </div>
+            <button type="button" class="btn tiny ghost" id="diagnostics-refresh">Actualizar</button>
+          </div>
+          <div id="diagnostics-report" class="diagnostic-grid" aria-live="polite"></div>
+          <details class="advanced">
+            <summary>Detalle técnico</summary>
+            <pre id="diagnostics-raw" class="log"></pre>
+          </details>
+        </section>
       </div>
     </section>
   </main>
 
-  <section class="card history-card" aria-labelledby="history-title">
-    <div class="card-head">
-      <div>
-        <h2 id="history-title">Historial</h2>
-        <p class="muted">Reposts y deshaceres registrados por la herramienta. Solo se deshace lo que hizo ella.</p>
-      </div>
-      <div class="actions compact">
-        <input type="search" id="history-filter" class="history-filter"
-               placeholder="Filtrar historial…" aria-label="Filtrar historial">
-        <button type="button" class="btn tiny ghost" id="refresh-history">Actualizar</button>
-        <button type="button" class="btn tiny danger-ghost" id="undo-last">Deshacer última tanda</button>
-      </div>
-    </div>
+  <footer class="footer">
+    <p class="muted">xrepost · uso personal · sin servicios externos · datos en <code id="state-path">~/.local/state/xrepost</code></p>
+    <a class="muted" href="/api/health" target="_blank" rel="noopener">Estado JSON</a>
+  </footer>
 
-    <div class="empty small" id="history-empty">
-      <p>Todavía no hay movimientos registrados.</p>
-      <p class="muted">El historial se crea con el primer repost real.</p>
-    </div>
-
-    <div class="table-wrap" id="history-wrap" hidden>
-      <table class="history">
-        <thead>
-          <tr>
-            <th>Cuándo</th>
-            <th>Acción</th>
-            <th>Resultado</th>
-            <th>Cuenta</th>
-            <th>Publicación</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="history-body"></tbody>
-      </table>
-    </div>
-    <div class="history-more">
-      <button type="button" class="btn tiny ghost" id="history-more" hidden>Cargar más</button>
-    </div>
-  </section>
-
-  <dialog id="confirm-dialog" class="dialog">
+  <dialog id="confirm-dialog" class="dialog" aria-labelledby="confirm-title">
     <form method="dialog" class="dialog-body">
-      <h2>Confirmar reposts</h2>
+      <h2 id="confirm-title">Confirmar reposts</h2>
       <p>Se actuará sobre la cuenta de la sesión de Chrome. Revisa el resumen antes de continuar.</p>
       <dl class="summary" id="confirm-summary"></dl>
       <label class="check">
@@ -312,7 +747,7 @@
     </form>
   </dialog>
 
-  <dialog id="undo-dialog" class="dialog">
+  <dialog id="undo-dialog" class="dialog" aria-labelledby="undo-title">
     <form method="dialog" class="dialog-body">
       <h2 id="undo-title">Deshacer la última tanda</h2>
       <p id="undo-text">Se quitarán los reposts que la herramienta hizo en la última ejecución y que sigan vigentes.</p>
@@ -326,6 +761,21 @@
       <div class="actions">
         <button value="cancel" class="btn ghost">Cancelar</button>
         <button type="button" class="btn danger" id="undo-confirm">Deshacer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="restore-dialog" class="dialog" aria-labelledby="restore-title">
+    <form method="dialog" class="dialog-body">
+      <h2 id="restore-title">Restaurar copia</h2>
+      <p id="restore-text">Se sustituirá el historial actual por la copia seleccionada. Antes se guarda una copia de seguridad del historial vigente.</p>
+      <label class="check">
+        <input type="checkbox" id="restore-check">
+        <span>Entiendo que el historial actual se reemplazará y que la operación queda registrada.</span>
+      </label>
+      <div class="actions">
+        <button value="cancel" class="btn ghost">Cancelar</button>
+        <button type="button" class="btn danger" id="restore-confirm" disabled>Restaurar</button>
       </div>
     </form>
   </dialog>
