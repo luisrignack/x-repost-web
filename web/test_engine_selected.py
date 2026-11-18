@@ -27,38 +27,58 @@ FAKE = textwrap.dedent(
 
     src = sys.stdin.read()
     log_path = os.environ["FAKE_LOG"]
-    state = {"unretweet": False}
+    NO_BUTTON = os.environ.get("FAKE_NO_BUTTON") == "1"
+    QUOTE_TOAST = os.environ.get("FAKE_QUOTE_TOAST", "1") == "1"
+    state = {"unretweet": False, "menu": False, "composer": False, "toast": False}
 
     def log(line):
         with open(log_path, "a", encoding="utf-8") as fh:
             fh.write(line + "\\n")
 
     def goto_url(url):
-        state["unretweet"] = False
+        state.update(unretweet=False, menu=False, composer=False, toast=False)
         log("GOTO " + url)
 
     def wait_for_load():
         pass
 
+    def type_text(text):
+        log("TYPE " + text)
+
     def js(expr):
-        if expr == 'document.querySelectorAll(\\'article[data-testid="tweet"]\\').length':
-            return 0
-        if expr == 'document.querySelectorAll(\\'[data-testid="retweet"]\\').length':
-            return 0 if state["unretweet"] else 1
-        if expr == 'document.querySelectorAll(\\'[data-testid="unretweet"]\\').length':
+        if "retweetConfirm" in expr:
+            if ".click()" in expr:
+                state["unretweet"] = True
+            return True
+        if "unretweetConfirm" in expr:
+            if ".click()" in expr:
+                state["unretweet"] = False
+            return True
+        if 'data-testid="toast"' in expr:
+            return state["toast"]
+        if 'role="menuitem"' in expr:
+            if ".click()" in expr:
+                state["menu"] = False
+                state["composer"] = True
+                return None
+            return state["menu"]
+        if "tweetButton" in expr and (".click()" in expr or "aria-disabled" in expr):
+            if ".click()" in expr:
+                state["composer"] = False
+                state["toast"] = QUOTE_TOAST
+                return True
+            return False
+        if "tweetTextarea_0" in expr:
+            return state["composer"]
+        if 'data-testid="unretweet"' in expr:
             return 1 if state["unretweet"] else 0
-        if expr == '!!document.querySelector(\\'[data-testid="retweetConfirm"]\\')':
-            return True
-        if expr == '!!document.querySelector(\\'[data-testid="unretweetConfirm"]\\')':
-            return True
-        if "retweetConfirm" in expr and ".click()" in expr:
-            state["unretweet"] = True
-            return None
-        if "unretweetConfirm" in expr and ".click()" in expr:
-            state["unretweet"] = False
-            return None
-        if '"retweet"' in expr and ".click()" in expr:
-            return None
+        if 'data-testid="retweet"' in expr:
+            if ".click()" in expr:
+                state["menu"] = True
+                return None
+            return 0 if (state["unretweet"] or NO_BUTTON) else 1
+        if 'article[data-testid="tweet"]' in expr:
+            return 0
         raise AssertionError("js inesperado: " + expr)
 
     time.sleep = lambda *args, **kwargs: None
@@ -67,6 +87,7 @@ FAKE = textwrap.dedent(
         "js": js,
         "goto_url": goto_url,
         "wait_for_load": wait_for_load,
+        "type_text": type_text,
     }
     try:
         exec(compile(src, "xrepost.py", "exec"), ns)
@@ -114,7 +135,7 @@ class EngineSelectedTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_engine(self, limit=10):
+    def run_engine(self, limit=10, extra_env=None):
         env = os.environ.copy()
         env.update(
             {
@@ -133,6 +154,7 @@ class EngineSelectedTest(unittest.TestCase):
                 "NO_COLOR": "1",
             }
         )
+        env.update(extra_env or {})
         return subprocess.run(
             [str(SH), "--csv", str(self.csv), "--md", str(self.md)],
             cwd=str(ROOT),
@@ -170,6 +192,48 @@ class EngineSelectedTest(unittest.TestCase):
         self.assertEqual([e["id"] for e in events], ["11", "22"])
         self.assertTrue(all(e["action"] == "repost" and e["result"] == "reposted" for e in events))
 
+    def test_skips_posts_already_done_in_history(self):
+        # Reaplicar un listado no debe repetir nada: las citas no se pueden
+        # verificar ni deshacer desde el DOM como los reposts.
+        self.history.write_text(
+            json.dumps(
+                {
+                    "ts": "2024-01-02T09:00:00Z",
+                    "run": "run-anterior",
+                    "action": "repost",
+                    "result": "quoted",
+                    "id": "11",
+                    "url": POSTS[0]["url"],
+                    "handle": "foo",
+                    "author": "Autor Uno",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        result = self.run_engine()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("sobre 1 publicaciones revisadas", result.stdout)
+        self.assertIn("ya reposteados o citados", result.stdout)
+
+        visited = [
+            line[5:]
+            for line in self.log.read_text("utf-8").splitlines()
+            if line.startswith("GOTO ")
+        ]
+        self.assertEqual(visited, [POSTS[1]["url"]])
+
+        rows = list(csv.DictReader(self.csv.read_text("utf-8").splitlines()))
+        self.assertEqual([row["url"] for row in rows], [POSTS[1]["url"]])
+
+        events = [
+            json.loads(line)
+            for line in self.history.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual([e["id"] for e in events if e.get("run") != "run-anterior"], ["22"])
+
     def test_ignores_non_x_urls(self):
         data = [POSTS[0], {"url": "https://evil.example/status/1", "texto": "no"}]
         self.selected.write_text(json.dumps(data), encoding="utf-8")
@@ -195,6 +259,77 @@ class EngineSelectedTest(unittest.TestCase):
         ]
         self.assertEqual(visited, [POSTS[0]["url"]])
         self.assertIn("límite de 1 alcanzado", result.stdout)
+
+
+    def test_invalid_limit_exits_with_clear_message(self):
+        result = self.run_engine(extra_env={"X_LIMIT": "abc"})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("X_LIMIT no es un número válido", result.stdout)
+
+    def test_circuit_breaker_stops_after_three_failures(self):
+        posts = [
+            dict(POSTS[0], url=f"https://x.com/foo/status/{i}") for i in range(1, 6)
+        ]
+        self.selected.write_text(json.dumps(posts, ensure_ascii=False), encoding="utf-8")
+        result = self.run_engine(extra_env={"FAKE_NO_BUTTON": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        visited = [
+            line[5:]
+            for line in self.log.read_text("utf-8").splitlines()
+            if line.startswith("GOTO ")
+        ]
+        self.assertEqual(len(visited), 3)
+        self.assertIn("3 fallos seguidos", result.stdout)
+
+    def test_quote_requires_confirmation_toast(self):
+        self.selected.write_text(json.dumps(POSTS[:1], ensure_ascii=False), encoding="utf-8")
+        result = self.run_engine(extra_env={"X_QUOTE": "#ETECSA"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = [
+            json.loads(line)
+            for line in self.history.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual([e["result"] for e in events], ["quoted"])
+        self.assertEqual(events[0]["quote"], "#ETECSA")
+        self.assertIn("TYPE #ETECSA", self.log.read_text("utf-8"))
+
+    def test_quote_without_toast_is_not_marked_done(self):
+        self.selected.write_text(json.dumps(POSTS[:1], ensure_ascii=False), encoding="utf-8")
+        result = self.run_engine(
+            extra_env={"X_QUOTE": "#ETECSA", "FAKE_QUOTE_TOAST": "0"}
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = [
+            json.loads(line)
+            for line in self.history.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual([e["result"] for e in events], ["quote_unverified"])
+        self.assertIn("cita sin confirmar", result.stdout)
+
+        # Un segundo intento vuelve a visitar el post: no quedó bloqueado.
+        self.log.write_text("", encoding="utf-8")
+        result = self.run_engine(extra_env={"X_QUOTE": "#ETECSA"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        visited = [
+            line[5:]
+            for line in self.log.read_text("utf-8").splitlines()
+            if line.startswith("GOTO ")
+        ]
+        self.assertEqual(visited, [POSTS[0]["url"]])
+
+    def test_posted_at_normalized_to_iso(self):
+        posts = [dict(POSTS[0], fecha="01/01/2024 10:00")]
+        self.selected.write_text(json.dumps(posts, ensure_ascii=False), encoding="utf-8")
+        result = self.run_engine()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = [
+            json.loads(line)
+            for line in self.history.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(events[0]["posted_at"], "2024-01-01T10:00")
 
 
 if __name__ == "__main__":

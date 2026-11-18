@@ -50,6 +50,9 @@
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+# El motor se ejecuta por stdin y no tiene `__file__`: le decimos dónde está el
+# proyecto para que pueda importar xrepost_labels.py (etiquetas compartidas).
+export X_SELF_DIR="$SELF_DIR"
 export X_HISTORY="${X_HISTORY:-${XDG_STATE_HOME:-$HOME/.local/state}/xrepost/history.jsonl}"
 
 usage() {
@@ -65,7 +68,7 @@ valid_date() {
   y="${BASH_REMATCH[1]}"
   m="${BASH_REMATCH[2]}"
   day="${BASH_REMATCH[3]}"
-  (( 10#$y >= 1900 && 10#$y <= 2199 )) || return 1
+  (( 10#$y >= 2006 && 10#$y <= 2100 )) || return 1
   (( 10#$m >= 1 && 10#$m <= 12 )) || return 1
   (( 10#$day >= 1 && 10#$day <= 31 )) || return 1
   [ "$(date -d "$d" +%F 2>/dev/null)" = "$d" ]
@@ -268,17 +271,11 @@ done
 export X_MODE="$MODE" X_UNDO_TARGET="$UNDO_TARGET" X_UNDO_N="$UNDO_N"
 
 if [ "$MODE" = "history" ]; then
-  python3 - "$X_HISTORY" "${HISTORY_N:-20}" <<'PY'
+  python3 - "$X_HISTORY" "${HISTORY_N:-20}" "$SELF_DIR" <<'PY'
 import json, sys
 
-LABELS = {
-    "reposted": "reposteado", "already": "ya estaba reposteado",
-    "no_button": "sin botón de repost", "no_menu": "menú no abierto",
-    "unconfirmed": "no confirmado", "undone": "deshecho",
-    "not_reposted": "no estaba reposteado", "undo_failed": "no se pudo deshacer",
-    "quoted": "citado con comentario", "no_quote_option": "menú sin cita",
-    "no_composer": "editor de cita no abierto", "quote_failed": "cita no publicada",
-}
+sys.path.append(sys.argv[3])
+from xrepost_labels import LABELS
 
 path, n = sys.argv[1], max(0, int(sys.argv[2] or 20))
 try:
@@ -416,6 +413,18 @@ export X_FORCE="$FORCE"
 export X_CSV="$CSV"
 export X_MD="$MD"
 export BU_CDP_URL="${BU_CDP_URL:-http://127.0.0.1:9222}"
+
+# Una sola ejecución a la vez: el CLI y el panel comparten Chrome y el
+# historial, y dos tandas simultáneas podrían repostear lo mismo dos veces.
+if [ "$MODE" != "history" ] && command -v flock >/dev/null 2>&1; then
+  _lock="${X_HISTORY}.lock"
+  mkdir -p "$(dirname "$_lock")" 2>/dev/null || true
+  exec 9>"$_lock"
+  if ! flock -n 9; then
+    echo "Hay otra ejecución de xrepost en curso ($_lock). Espera a que termine." >&2
+    exit 1
+  fi
+fi
 
 # Recordar las cuentas y los hashtags para las próximas sugerencias (CLI y panel).
 if [ "$MODE" = "repost" ] && [ -n "${X_USERS:-}" ]; then

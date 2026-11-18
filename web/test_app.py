@@ -78,7 +78,13 @@ STUB = textwrap.dedent(
         if dump:
             with open(dump, "w", encoding="utf-8") as fh:
                 json.dump(
-                    {k: os.environ.get(k, "") for k in ("X_QUOTE", "X_HASHTAGS", "X_APPLY")},
+                    {
+                        k: os.environ.get(k, "")
+                        for k in (
+                            "X_QUOTE", "X_HASHTAGS", "X_APPLY",
+                            "X_ONLY_URLS_FILE", "X_UNDO_TARGET", "X_UNDO_N",
+                        )
+                    },
                     fh,
                 )
         if os.environ.get("STUB_FAIL") == "1":
@@ -160,6 +166,9 @@ STUB = textwrap.dedent(
             ]
 
         if os.environ.get("X_APPLY") == "1":
+            pending = [dict(row, estado="pendiente") for row in rows]
+            write(csv_path, pending)
+            write(md_path, pending)
             time.sleep(SLEEP)
             done = 0
             for row in rows:
@@ -167,7 +176,7 @@ STUB = textwrap.dedent(
                     break
                 save("repost", "reposted", row["url"])
                 done += 1
-                print("reposteado:", row["url"])
+                print("  reposteado:", row["url"])
                 time.sleep(max(0.0, SLEEP / 4))
             write(csv_path, rows)
             write(md_path, rows)
@@ -517,6 +526,79 @@ class WebTest(unittest.TestCase):
         self.assertEqual(env["X_HASHTAGS"], str(self.app.hashtags))
         self.assertEqual(env["X_APPLY"], "0")
 
+    def test_server_env_does_not_leak_into_jobs(self):
+        dump = self.root / "env.json"
+        self.set_env("STUB_ENV_DUMP", str(dump))
+        self.set_env("X_ONLY_URLS_FILE", str(self.root / "viejo.json"))
+        self.set_env("X_QUOTE", "#heredado")
+        self.set_env("X_UNDO_TARGET", "999")
+        self.set_env("X_UNDO_N", "7")
+        job = self.preview()
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(len(job["posts"]), 2)  # no redirigido a un listado viejo
+        env = json.loads(dump.read_text(encoding="utf-8"))
+        self.assertEqual(env["X_ONLY_URLS_FILE"], "")
+        self.assertEqual(env["X_QUOTE"], "")
+        self.assertEqual(env["X_UNDO_TARGET"], "")
+        self.assertEqual(env["X_UNDO_N"], "")
+
+    def test_undoable_survives_failed_undo(self):
+        url = "https://x.com/foo/status/11"
+        events = [
+            {"ts": "2026-11-17T10:00:00Z", "run": "r1", "action": "repost",
+             "result": "reposted", "id": "11", "url": url},
+            {"ts": "2026-11-17T10:05:00Z", "run": "r2", "action": "undo",
+             "result": "undo_failed", "id": "11", "url": url},
+        ]
+        self.history.write_text(
+            "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8"
+        )
+        status, _, data = self.json_request("GET", "/api/history")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["entries"][0]["undoable"])
+
+        events.append({"ts": "2026-11-17T10:10:00Z", "run": "r3", "action": "undo",
+                       "result": "undone", "id": "11", "url": url})
+        self.history.write_text(
+            "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8"
+        )
+        status, _, data = self.json_request("GET", "/api/history")
+        self.assertEqual(status, 200)
+        self.assertFalse(data["entries"][0]["undoable"])
+
+    def test_keep_alive_survives_rejected_post(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request(
+                "POST", "/api/preview", body=b"x" * 50,
+                headers={"Content-Type": "text/plain", "X-Token": self.token},
+            )
+            resp = conn.getresponse()
+            resp.read()
+            self.assertEqual(resp.status, 415)
+            # El cuerpo rechazado se drena: la misma conexión sirve la siguiente.
+            conn.request("GET", "/api/health", headers={"X-Token": self.token})
+            resp = conn.getresponse()
+            payload = resp.read()
+            self.assertEqual(resp.status, 200)
+            self.assertTrue(json.loads(payload)["ok"])
+        finally:
+            conn.close()
+
+    def test_early_rejection_closes_connection(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request(
+                "POST", "/api/preview", body=b"x" * 50,
+                headers={"Content-Type": "application/json"},  # sin token
+            )
+            resp = conn.getresponse()
+            resp.read()
+            self.assertEqual(resp.status, 401)
+            self.assertEqual(resp.getheader("Connection"), "close")
+        finally:
+            conn.close()
+
     def test_unknown_job_and_export(self):
         status, _, _ = self.request("GET", "/api/jobs/deadbeef")
         self.assertEqual(status, 404)
@@ -594,6 +676,69 @@ class WebTest(unittest.TestCase):
         self.assertIn("código 3", job["error"])
         self.assertFalse(self.history.exists())
 
+    def test_apply_only_selected_posts(self):
+        preview = self.preview()
+        chosen_url = preview["posts"][1]["url"]
+        job = self.apply(preview, selected_urls=[chosen_url])
+        self.assertEqual(job["status"], "done")
+        self.assertEqual([p["url"] for p in job["posts"]], [chosen_url])
+
+        selected = self.runs / preview["id"] / "selected.json"
+        self.assertEqual(
+            [item["url"] for item in json.loads(selected.read_text("utf-8"))],
+            [chosen_url],
+        )
+        lines = [json.loads(line) for line in self.history.read_text("utf-8").splitlines()]
+        self.assertEqual([e["url"] for e in lines], [chosen_url])
+
+    def test_apply_selection_validation(self):
+        preview = self.preview()
+        cases = [
+            ([], "al menos una"),
+            (["https://x.com/foo/status/999"], "no están en la previsualización"),
+            ("https://x.com/foo/status/1", "no es válida"),
+            ([123], "no es válida"),
+        ]
+        for selection, message in cases:
+            with self.subTest(selection=selection):
+                body = self.params()
+                body.update(
+                    {"preview_id": preview["id"], "confirm": True, "selected_urls": selection}
+                )
+                status, _, data = self.json_request("POST", "/api/apply", body)
+                self.assertEqual(status, 400, data)
+                self.assertIn(message, data["error"])
+        self.assertFalse(self.history.exists())
+
+    def test_apply_reports_live_progress(self):
+        preview = self.preview()
+        self.set_env("STUB_SLEEP", "4")
+        body = self.params()
+        body.update({"preview_id": preview["id"], "confirm": True})
+        status, _, data = self.json_request("POST", "/api/apply", body)
+        self.assertEqual(status, 202, data)
+        job_id = data["id"]
+
+        seen_partial = False
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            _, _, job = self.json_request("GET", f"/api/jobs/{job_id}")
+            if job["status"] != "running":
+                break
+            progress = job.get("progress")
+            if progress and progress["total"] == 2 and progress["done"] == 1:
+                seen_partial = True
+                self.assertEqual(
+                    [p["estado"] for p in job["posts"]], ["reposteado", "pendiente"]
+                )
+                break
+            time.sleep(0.05)
+        job = self.wait_job(job_id)
+        self.assertEqual(job["status"], "done")
+        self.assertTrue(seen_partial, "no se observó el progreso parcial en vivo")
+        self.assertEqual(job["progress"], {"done": 2, "total": 2})
+        self.assertTrue(all(p["estado"] == "reposteado" for p in job["posts"]))
+
     # --- una ejecución a la vez y cancelación --------------------------
 
     def test_only_one_job_and_cancel(self):
@@ -662,6 +807,17 @@ class WebTest(unittest.TestCase):
             status, _, _ = self.json_request("POST", "/api/undo", bad)
             self.assertEqual(status, 400)
 
+    def test_history_labels_include_quote_results(self):
+        path = self.root / "quote-history.jsonl"
+        events = [
+            {"id": "5", "ts": "2024-01-01T10:00:00Z", "action": "repost", "result": "quoted", "url": "https://x.com/a/status/5"},
+            {"id": "6", "ts": "2024-01-01T10:01:00Z", "action": "repost", "result": "no_composer", "url": "https://x.com/a/status/6"},
+        ]
+        path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+        labels = {entry["id"]: entry["result_label"] for entry in read_history(path, 10)}
+        self.assertEqual(labels["5"], "citado con comentario")
+        self.assertEqual(labels["6"], "no se abrió el editor de la cita")
+
     def test_history_keeps_only_latest_state_per_post(self):
         path = self.root / "manual-history.jsonl"
         events = [
@@ -676,6 +832,21 @@ class WebTest(unittest.TestCase):
         self.assertFalse(entries[0]["undoable"])
         self.assertTrue(entries[1]["undoable"])
         self.assertEqual(entries[0]["result_label"], "deshecho")
+
+    def test_history_exposes_quote_and_run(self):
+        path = self.root / "quote-run-history.jsonl"
+        events = [
+            {"id": "7", "ts": "2024-01-01T10:00:00Z", "run": "tanda-1", "action": "repost",
+             "result": "quoted", "url": "https://x.com/a/status/7", "quote": "#ETECSA #cuba"},
+            {"id": "8", "ts": "2024-01-01T10:01:00Z", "run": "tanda-1", "action": "repost",
+             "result": "reposted", "url": "https://x.com/a/status/8"},
+        ]
+        path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+        entries = read_history(path, 10)
+        self.assertEqual([e["id"] for e in entries], ["8", "7"])
+        self.assertEqual(entries[0]["quote"], "")
+        self.assertEqual(entries[1]["quote"], "#ETECSA #cuba")
+        self.assertTrue(all(e["run"] == "tanda-1" for e in entries))
 
 
 if __name__ == "__main__":

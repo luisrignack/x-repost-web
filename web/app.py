@@ -45,6 +45,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import xrepost_accounts  # noqa: E402  (depende del sys.path anterior)
 import xrepost_hashtags  # noqa: E402
+import xrepost_history  # noqa: E402
+import xrepost_labels  # noqa: E402
 
 MAX_BODY = 1_000_000
 MAX_LOG = 2_000
@@ -57,17 +59,8 @@ HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 STATUS_RE = re.compile(
     r"^https?://(?:www\.)?(?:x|twitter)\.com/(?:[A-Za-z0-9_]+|i)/status/\d+/?$"
 )
-
-LABELS = {
-    "reposted": "reposteado",
-    "already": "ya estaba reposteado",
-    "no_button": "sin botón de repost",
-    "no_menu": "menú no abierto",
-    "unconfirmed": "no confirmado",
-    "undone": "deshecho",
-    "not_reposted": "no estaba reposteado",
-    "undo_failed": "no se pudo deshacer",
-}
+# Línea de estado por publicación del motor: "  reposteado: https://x.com/…".
+PROGRESS_RE = re.compile(r"^ {2}(.+?):\s+(https?://\S+/status/\d+)/?\s*$")
 
 
 class HttpError(Exception):
@@ -232,22 +225,29 @@ def read_history(path: Path, limit: int = 30) -> list[dict]:
         latest.pop(item["id"], None)
         latest[item["id"]] = item
 
+    # «Deshacer» se ofrece mientras el repost siga vigente según el motor,
+    # no solo si el último evento fue el repost: tras un undo_failed el
+    # repost sigue ahí y debe poder reintentarse.
+    _, ours = xrepost_history.history_state(entries)
+
     out = []
     for item in reversed(list(latest.values())[-max(1, limit):]):
         result = item.get("result", "")
-        undoable = item.get("action") == "repost" and result == "reposted"
+        undoable = item["id"] in ours and bool(item.get("url"))
         out.append(
             {
                 "ts": item.get("ts", ""),
                 "action": item.get("action", ""),
                 "result": result,
-                "result_label": LABELS.get(result, result),
+                "result_label": xrepost_labels.label(result),
                 "undoable": undoable,
                 "id": item.get("id", ""),
                 "url": item.get("url", ""),
                 "handle": item.get("handle", ""),
                 "author": item.get("author", ""),
                 "posted_at": item.get("posted_at", ""),
+                "quote": item.get("quote", ""),
+                "run": item.get("run", ""),
             }
         )
     return out
@@ -266,6 +266,7 @@ class Job:
         self.error = ""
         self.lines: list[str] = []
         self.posts: list[dict] = []
+        self.progress_done = 0
         self.dir = runs / self.id
         self.csv_path = self.dir / "posts.csv"
         self.md_path = self.dir / "posts.md"
@@ -282,6 +283,7 @@ class Job:
         with self.lock:
             lines = self.lines[-tail:]
             posts = list(self.posts)
+            progress_done = self.progress_done
         elapsed = (self.ended or time.time()) - self.started
         return {
             "id": self.id,
@@ -296,6 +298,11 @@ class Job:
             "error": self.error,
             "lines": lines,
             "posts": posts,
+            "progress": (
+                {"done": progress_done, "total": len(posts)}
+                if self.kind == "apply"
+                else None
+            ),
             "exports": {
                 "csv": self.csv_path.exists() and bool(self.posts),
                 "md": self.md_path.exists() and bool(self.posts),
@@ -460,6 +467,14 @@ class App:
                 "X_HASHTAGS": str(self.hashtags),
                 "X_MODE": "repost",
                 "X_FORCE": "0",
+                # El entorno del servidor no debe colarse en los trabajos:
+                # un X_ONLY_URLS_FILE heredado redirigiría la previsualización
+                # a un listado viejo, y un X_QUOTE heredado mancharía los
+                # eventos de deshacer en el historial.
+                "X_ONLY_URLS_FILE": "",
+                "X_UNDO_TARGET": "",
+                "X_UNDO_N": "",
+                "X_QUOTE": "",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONIOENCODING": "utf-8",
                 "NO_COLOR": "1",
@@ -523,6 +538,8 @@ class App:
             for raw in proc.stdout:
                 line = ANSI_RE.sub("", raw.rstrip("\n")).replace("\r", "")
                 job.add(line)
+                if job.kind == "apply":
+                    self._track_progress(job, line)
             rc = proc.wait()
             job.returncode = rc
 
@@ -564,6 +581,26 @@ class App:
                 job.posts = [dict(row) for row in reader if row.get("url")]
         except Exception as exc:
             job.add(f"Aviso: no se pudo leer el CSV ({exc}).")
+
+    def _track_progress(self, job: Job, line: str) -> None:
+        """Estado por publicación mientras el motor trabaja (apply).
+
+        El motor escribe el CSV inicial («pendiente») antes de empezar y una
+        línea «  <estado>: <url>» por cada post procesado: con eso la tabla
+        del panel se actualiza en vivo sin esperar al final.
+        """
+        if not job.posts and job.csv_path.exists():
+            self._load_posts(job)
+        match = PROGRESS_RE.match(line)
+        if not match:
+            return
+        state, url = match.group(1), match.group(2).rstrip("/")
+        with job.lock:
+            for post in job.posts:
+                if post.get("url", "").rstrip("/") == url:
+                    post["estado"] = state
+                    break
+            job.progress_done += 1
 
     def _watchdog(self, job: Job) -> None:
         while job.status == "running":
@@ -636,6 +673,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self._security_headers()
         self.end_headers()
         self.wfile.write(body)
@@ -677,15 +716,20 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
         self._send_bytes(body.encode("utf-8"), "text/html; charset=utf-8", status)
 
     def _read_json(self) -> dict:
-        if "application/json" not in (self.headers.get("Content-Type") or "").lower():
-            raise HttpError(415, "Se esperaba application/json.")
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
+            self.close_connection = True
             raise HttpError(400, "Longitud no válida.")
-        if length <= 0:
+        length = max(0, length)
+        if "application/json" not in (self.headers.get("Content-Type") or "").lower():
+            self._drain_body(length)
+            raise HttpError(415, "Se esperaba application/json.")
+        if length == 0:
             return {}
         if length > MAX_BODY:
+            self._drain_body(MAX_BODY)
+            self.close_connection = True
             raise HttpError(413, "Petición demasiado grande.")
         raw = self.rfile.read(length)
         try:
@@ -695,6 +739,16 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
         if not isinstance(data, dict):
             raise HttpError(400, "El cuerpo debe ser un objeto JSON.")
         return data
+
+    def _drain_body(self, length: int) -> None:
+        """Consume el cuerpo declarado para no desincronizar el keep-alive."""
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                self.close_connection = True
+                return
+            remaining -= len(chunk)
 
     # --- rutas -------------------------------------------------------------
 
@@ -732,11 +786,16 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
 
     def do_POST(self) -> None:  # noqa: N802
         try:
+            # Rechazos antes de leer el cuerpo: sin drenarlo, los bytes que
+            # queden se interpretarían como la siguiente petición keep-alive.
             if not self._host_ok():
+                self.close_connection = True
                 raise HttpError(403, "Host no permitido.")
             if not self._origin_ok():
+                self.close_connection = True
                 raise HttpError(403, "Origen no permitido.")
             if not self._token_ok():
+                self.close_connection = True
                 raise HttpError(401, "No autorizado.")
             path = urlparse(self.path).path
             data = self._read_json()
@@ -769,7 +828,7 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
             self.send_response(HTTPStatus.SEE_OTHER)
             self.send_header(
                 "Set-Cookie",
-                f"xrepost_token={self.application.token}; Path=/; HttpOnly; SameSite=Strict",
+                f"xrepost_token={self.application.token}; Path=/; HttpOnly; SameSite=Lax",
             )
             self.send_header("Location", "/")
             self.send_header("Content-Length", "0")
@@ -902,10 +961,23 @@ h1{{font-size:20px;margin:0 0 8px}}p{{color:#93a0bd;margin:0}}</style>
         if not preview.posts:
             raise HttpError(400, "La previsualización no tiene publicaciones para repostear.")
 
+        chosen = preview.posts
+        if "selected_urls" in data:
+            raw_urls = data.get("selected_urls")
+            if not isinstance(raw_urls, list) or not all(isinstance(u, str) for u in raw_urls):
+                raise HttpError(400, "La selección de publicaciones no es válida.")
+            wanted = {u.rstrip("/") for u in raw_urls}
+            available = {p.get("url", "").rstrip("/") for p in preview.posts}
+            if wanted - available:
+                raise HttpError(400, "Hay publicaciones seleccionadas que no están en la previsualización.")
+            chosen = [p for p in preview.posts if p.get("url", "").rstrip("/") in wanted]
+            if not chosen:
+                raise HttpError(400, "Selecciona al menos una publicación para repostear.")
+
         preview.dir.mkdir(parents=True, exist_ok=True)
         selected = preview.dir / "selected.json"
         selected.write_text(
-            json.dumps(preview.posts, ensure_ascii=False),
+            json.dumps(chosen, ensure_ascii=False),
             encoding="utf-8",
         )
         params["only_urls_file"] = str(selected)

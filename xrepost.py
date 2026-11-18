@@ -24,21 +24,33 @@ Variables de entorno (las pone xrepost.sh):
                     panel web: evita volver a buscar entre preview y apply)
 """
 
+import atexit
 import csv
 import json
 import os
 import re
+import signal
 import sys
+import threading
 import time
 import datetime as dt
 from urllib.parse import quote, urlparse
+
+def _env_num(name, default, cast):
+    raw = os.environ.get(name, "").strip() or str(default)
+    try:
+        return cast(raw)
+    except ValueError:
+        print(f"{name} no es un número válido: '{raw}'")
+        sys.exit(2)
+
 
 USERS = [u.strip().lstrip("@") for u in os.environ.get("X_USERS", "").split(",") if u.strip()]
 D_FROM = os.environ.get("X_FROM", "")
 D_TO = os.environ.get("X_TO", "") or D_FROM
 APPLY = os.environ.get("X_APPLY", "0") == "1"
-LIMIT = int(os.environ.get("X_LIMIT", "10"))
-DELAY = float(os.environ.get("X_DELAY", "20"))
+LIMIT = _env_num("X_LIMIT", 10, int)
+DELAY = _env_num("X_DELAY", 20, float)
 SKIP_REPLIES = os.environ.get("X_SKIP_REPLIES", "1") == "1"
 SKIP_RETWEETS = os.environ.get("X_SKIP_RETWEETS", "1") == "1"
 MODE = os.environ.get("X_MODE", "repost")
@@ -59,25 +71,49 @@ SKIPPED_RT = 0
 SKIPPED_KW = 0
 SEEN = set()  # URLs ya aceptadas; global para no duplicar entre usuarios
 
-# Códigos internos (historial) → texto que ve el usuario.
-LABELS = {
-    "reposted": "reposteado",
-    "quoted": "citado con comentario",
-    "already": "ya estaba reposteado",
-    "no_button": "no encontré el botón de repost",
-    "no_menu": "el menú no se abrió",
-    "no_quote_option": "el menú no ofrecía «Citar»",
-    "no_composer": "no se abrió el editor de la cita",
-    "quote_failed": "no se pudo publicar la cita",
-    "unconfirmed": "no se pudo confirmar",
-    "undone": "deshecho",
-    "not_reposted": "no estaba reposteado",
-    "undo_failed": "no se pudo deshacer",
-}
+
+def _load_shared(module, attr):
+    """Módulos compartidos con el CLI y el panel (xrepost_labels, xrepost_history).
+
+    El motor llega por stdin al harness, así que no existe `__file__`: se busca
+    el módulo en la carpeta que exporta xrepost.sh. Si no aparece, se usa el
+    respaldo local (la ejecución sigue funcionando igual).
+    """
+    base = os.environ.get("X_SELF_DIR") or os.getcwd()
+    try:
+        if base not in sys.path:
+            sys.path.append(base)
+        return getattr(__import__(module), attr)
+    except Exception:
+        return None
+
+
+LABELS = _load_shared("xrepost_labels", "LABELS") or {}
 
 
 def label(res):
     return LABELS.get(res, res)
+
+
+def _fallback_history_state(entries):
+    reposted, ours = set(), {}
+    for e in entries:
+        action, res = e.get("action"), e.get("result")
+        if action == "repost":
+            if res == "reposted":
+                reposted.add(e["id"])
+                ours.pop(e["id"], None)
+                ours[e["id"]] = e
+            elif res in ("quoted", "already"):
+                reposted.add(e["id"])
+        elif action == "undo" and res in ("undone", "not_reposted"):
+            reposted.discard(e["id"])
+            ours.pop(e["id"], None)
+    return reposted, ours
+
+
+_history_state = _load_shared("xrepost_history", "history_state") or _fallback_history_state
+_iso_timestamp = _load_shared("xrepost_history", "iso_timestamp")
 
 
 def fmt_fecha(value):
@@ -136,29 +172,76 @@ COLLECT_JS = (
 )
 
 N_ARTICLES = "document.querySelectorAll('article[data-testid=\"tweet\"]').length"
-N_RETWEET = "document.querySelectorAll('[data-testid=\"retweet\"]').length"
-N_UNRETWEET = "document.querySelectorAll('[data-testid=\"unretweet\"]').length"
+
+# Se actúa solo sobre el artículo del post abierto, nunca sobre las respuestas
+# que X carga debajo: un botón de una respuesta daría falsos «ya estaba
+# reposteado», «no confirmado» o «deshecho». Se busca por el ID de la URL
+# (una respuesta muestra el tweet padre arriba, también como artículo) y se
+# cae al primero si no aparece.
+FOCAL = (
+    "(function(){"
+    "var m=location.pathname.match(/\\/status\\/(\\d+)/);"
+    "var id=m?m[1]:'';"
+    "var arts=document.querySelectorAll('article[data-testid=\"tweet\"]');"
+    "if(!id)return arts[0]||null;"
+    "for(var i=0;i<arts.length;i++){"
+    "var ls=arts[i].querySelectorAll('a[href*=\"/status/\"]');"
+    "for(var j=0;j<ls.length;j++){"
+    "if(ls[j].getAttribute('href').indexOf('/status/'+id)>=0)return arts[i];}}"
+    "return arts[0]||null;})()"
+)
+N_RETWEET = (
+    "(function(){var a=" + FOCAL + ";"
+    "return a?a.querySelectorAll('[data-testid=\"retweet\"]').length:0})()"
+)
+N_UNRETWEET = (
+    "(function(){var a=" + FOCAL + ";"
+    "return a?a.querySelectorAll('[data-testid=\"unretweet\"]').length:0})()"
+)
+FIRST_RETWEET = (
+    "(function(){var a=" + FOCAL + ";"
+    "return a?a.querySelector('[data-testid=\"retweet\"]'):null})()"
+)
+FIRST_UNRETWEET = (
+    "(function(){var a=" + FOCAL + ";"
+    "return a?a.querySelector('[data-testid=\"unretweet\"]'):null})()"
+)
 HAS_CONFIRM = "!!document.querySelector('[data-testid=\"retweetConfirm\"]')"
 HAS_UNDO = "!!document.querySelector('[data-testid=\"unretweetConfirm\"]')"
-FIRST_RETWEET = "document.querySelector('[data-testid=\"retweet\"]')"
-FIRST_UNRETWEET = "document.querySelector('[data-testid=\"unretweet\"]')"
 
 # Menú de repost: la opción de cita es el enlace a /compose/post.
 QUOTE_MENU = "document.querySelector('a[role=\"menuitem\"][href*=\"/compose/post\"]')"
 HAS_QUOTE_MENU = "!!document.querySelector('a[role=\"menuitem\"][href*=\"/compose/post\"]')"
-HAS_QUOTE_COMPOSER = "!!document.querySelector('[data-testid=\"tweetButton\"]')"
+
+# X confirma la publicación con un toast que enlaza al post nuevo («Ver»).
+HAS_POST_TOAST = "!!document.querySelector('[data-testid=\"toast\"] a[href*=\"/status/\"]')"
+
+# El modal de la cita, no el compositor de respuesta que X muestra arriba en la
+# página del post: se busca el último editor de texto dentro de un diálogo.
+QUOTE_DIALOG = (
+    "(function(){"
+    "var ts=document.querySelectorAll('[data-testid=\"tweetTextarea_0\"]');"
+    "for(var i=ts.length-1;i>=0;i--){"
+    "var d=ts[i].closest('[role=\"dialog\"],[aria-modal=\"true\"]');"
+    "if(d&&d.querySelector('[data-testid=\"tweetButton\"]'))return d;}"
+    "return null;})()"
+)
+HAS_QUOTE_COMPOSER = "!!(" + QUOTE_DIALOG + ")"
 QUOTE_POST_DISABLED = (
-    "(function(){var b=document.querySelector('[data-testid=\"tweetButton\"]');"
+    "(function(){var d=" + QUOTE_DIALOG + ";"
+    "var b=d?d.querySelector('[data-testid=\"tweetButton\"]'):null;"
     "return !b||b.getAttribute('aria-disabled')==='true';})()"
 )
-# El editor de la cita es el textarea que vive junto al botón «Post» del modal.
 FOCUS_QUOTE_EDITOR = (
-    "(function(){var b=document.querySelector('[data-testid=\"tweetButton\"]');"
-    "if(!b)return false;var n=b;"
-    "for(var i=0;i<12&&n;i++){"
-    "var t=n.querySelector('[data-testid=\"tweetTextarea_0\"]');"
-    "if(t){t.focus();return true;}n=n.parentElement;}"
-    "return false;})()"
+    "(function(){var d=" + QUOTE_DIALOG + ";"
+    "if(!d)return false;"
+    "var t=d.querySelector('[data-testid=\"tweetTextarea_0\"]');"
+    "if(!t)return false;t.focus();return true;})()"
+)
+CLICK_QUOTE_POST = (
+    "(function(){var d=" + QUOTE_DIALOG + ";"
+    "var b=d?d.querySelector('[data-testid=\"tweetButton\"]'):null;"
+    "if(!b)return false;b.click();return true;})()"
 )
 
 
@@ -260,6 +343,9 @@ def load_history():
 
 def save_event(action, result, post=None, entry=None):
     base = entry or post or {}
+    posted_at = base.get("posted_at") or base.get("time", "")
+    if _iso_timestamp:
+        posted_at = _iso_timestamp(posted_at)
     rec = {
         "ts": now(),
         "run": RUN_ID,
@@ -270,9 +356,9 @@ def save_event(action, result, post=None, entry=None):
         "search_user": base.get("search_user", ""),
         "author": base.get("author") or base.get("user", ""),
         "handle": base.get("handle", ""),
-        "posted_at": base.get("posted_at") or base.get("time", ""),
+        "posted_at": posted_at,
     }
-    if QUOTE_TEXT:
+    if action == "repost" and QUOTE_TEXT:
         rec["quote"] = QUOTE_TEXT
     try:
         d = os.path.dirname(HISTORY)
@@ -285,33 +371,8 @@ def save_event(action, result, post=None, entry=None):
 
 
 def history_state(entries):
-    """Devuelve (reposteados, nuestros).
-
-    reposteados: IDs cuyo último estado conocido es "reposteado".
-    nuestros:    id -> evento del último repost hecho por la herramienta
-                 que sigue vigente (para poder deshacerlo).
-    """
-    reposted = set()
-    ours = {}
-    for e in entries:
-        action, res = e.get("action"), e.get("result")
-        if action == "repost":
-            if res == "reposted":
-                reposted.add(e["id"])
-                ours.pop(e["id"], None)  # que la última acción quede al final
-                ours[e["id"]] = e
-            elif res == "quoted":
-                # Una cita no se deshace con «unretweet», pero sí cuenta como
-                # hecha: no se vuelve a citar el mismo post en otra ejecución.
-                reposted.add(e["id"])
-            elif res == "already":
-                reposted.add(e["id"])
-                # si ya era nuestro, sigue siéndolo; si no, no lo reclamamos
-            # un fallo no cambia lo que sabíamos del estado
-        elif action == "undo" and res in ("undone", "not_reposted"):
-            reposted.discard(e["id"])
-            ours.pop(e["id"], None)
-    return reposted, ours
+    """Devuelve (reposteados, nuestros); ver xrepost_history.history_state."""
+    return _history_state(entries)
 
 
 def reposted_ids(entries):
@@ -453,12 +514,22 @@ def quote_repost(url, text):
     else:
         return "quote_failed"
 
-    js("document.querySelector('[data-testid=\"tweetButton\"]').click()")
+    if not js(CLICK_QUOTE_POST):
+        return "quote_failed"
     for _ in range(24):
         time.sleep(0.5)
         if not js(HAS_QUOTE_COMPOSER):
+            break
+    else:
+        return "quote_failed"
+    # El editor puede cerrarse sin publicar (navegación, error de X): solo el
+    # toast con enlace al post nuevo confirma la cita. Sin él no se marca como
+    # hecha, porque una cita falsa en el historial bloquea el reintento.
+    for _ in range(10):
+        if js(HAS_POST_TOAST):
             return "quoted"
-    return "quote_failed"
+        time.sleep(0.5)
+    return "quote_unverified"
 
 
 def undo_one(url):
@@ -562,9 +633,66 @@ def run_undo():
     return 0
 
 
+# --- pestaña propia ----------------------------------------------------------
+
+def _close_quietly(target: str) -> None:
+    try:
+        close_tab(target)
+    except Exception:
+        pass
+
+
+def _guard_own_tab(target: str) -> None:
+    """Cierra la pestaña propia también si el trabajo se cancela.
+
+    El panel cancela con SIGTERM al grupo de procesos y, a los 3 s, con
+    SIGKILL; por eso se cierra en un hilo con espera máxima y se sale sin
+    esperar a nada más.
+    """
+
+    def handler(signum, _frame):
+        closer = threading.Thread(target=_close_quietly, args=(target,), daemon=True)
+        closer.start()
+        closer.join(2.0)
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass
+
+
+def use_own_tab() -> None:
+    """Trabaja en una pestaña propia y la cierra al terminar.
+
+    El motor comparte Chrome con la persona: sin esto, la primera navegación
+    se lleva por delante la pestaña que tenga activa. Solo se cierra la
+    pestaña que hemos abierto nosotros; si el CLI no ofrece los helpers, se
+    mantiene el comportamiento anterior.
+    """
+    try:
+        before = {t.get("targetId") for t in list_tabs()}
+        new_tab("about:blank")
+        own = [t for t in list_tabs() if t.get("targetId") not in before]
+    except Exception:
+        return
+    target = own[-1].get("targetId") if own else ""
+    if target:
+        atexit.register(_close_quietly, target)
+        _guard_own_tab(target)
+
+
 # --- principal --------------------------------------------------------------
 
 def main():
+    use_own_tab()
+
     if MODE in ("undo", "undo_last"):
         return run_undo()
 
@@ -576,6 +704,15 @@ def main():
 
     if selected_file:
         found = load_selected_posts(selected_file)
+        # El listado revisado se filtra igual que la búsqueda: reaplicar una
+        # previsualización no debe repetir nada. Es imprescindible con citas,
+        # porque X no ofrece un «quitar cita» que sirva de verificación.
+        skipped_hist = 0
+        already = reposted_ids(load_history())
+        if already and not FORCE:
+            before = len(found)
+            found = [p for p in found if tweet_id(p.get("url", "")) not in already]
+            skipped_hist = before - len(found)
         print(
             f"modo: {'APLICAR reposts' if APPLY else 'DRY-RUN (solo listar)'} "
             f"sobre {len(found)} publicaciones revisadas | límite={LIMIT} | delay={DELAY}s"
@@ -583,7 +720,16 @@ def main():
         print("origen: listado de la previsualización (no se vuelve a buscar en X)")
         if QUOTE_TEXT:
             print(f"comentario de la cita: {QUOTE_TEXT}")
+        if skipped_hist:
+            print(
+                f"({skipped_hist} ya reposteados o citados en ejecuciones "
+                "anteriores; usa --force para incluirlos)"
+            )
         if not found:
+            if skipped_hist:
+                print("\nNada pendiente: todo el listado consta como hecho.")
+                do_export([])
+                return 0
             print("\nNo hay publicaciones seleccionadas.")
             do_export([])
             return 2
@@ -644,6 +790,7 @@ def main():
     else:
         print(f"\nReposteando (máx {LIMIT})...\n")
     done = 0
+    failures = 0
     for p in found:
         if done >= LIMIT:
             print(f"límite de {LIMIT} alcanzado")
@@ -654,7 +801,15 @@ def main():
         save_event("repost", res, post=p)
         if res in ("reposted", "quoted"):
             done += 1
+            failures = 0
             time.sleep(DELAY)
+        else:
+            failures += 1
+            # El límite cuenta solo éxitos: sin este corte, una tanda donde
+            # todo falla seguiría actuando sobre los 40 posts por usuario.
+            if failures >= 3:
+                print("3 fallos seguidos; se detiene la tanda por seguridad")
+                break
     do_export(found, statuses, default_status="no procesado")
     print(f"\nTotal {'citado' if QUOTE_TEXT else 'reposteado'}: {done}")
     return 0

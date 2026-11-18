@@ -48,6 +48,9 @@ Por defecto **no repostea nada**: primero enseña la lista (modo *dry-run*). Sol
 ├── xrepost.py                 # lógica: búsqueda, filtrado, repost y verificación
 ├── xrepost_accounts.py        # cuentas recordadas, ranking y prompt con sugerencias
 ├── xrepost_hashtags.py        # hashtags recordados, ranking y normalización de la cita
+├── xrepost_history.py         # estado del historial compartido: deduplicación y tanda deshacible
+├── xrepost_labels.py          # etiquetas de resultado compartidas (motor, CLI y panel)
+├── web/                       # panel web local (guía propia en web/README.md)
 ├── README.md                  # este documento (texto, se actualiza primero)
 └── xrepost-documentacion.pdf  # este mismo documento en PDF (16 páginas)
 ```
@@ -56,6 +59,9 @@ Por defecto **no repostea nada**: primero enseña la lista (modo *dry-run*). Sol
 - **`xrepost.py`** se ejecuta *dentro* del harness. No importa `browser-use`: las funciones (`goto_url`, `js`, `wait_for_load`, …) ya están disponibles en el entorno de ejecución.
 - **`xrepost_accounts.py`** guarda las cuentas usadas, calcula las coincidencias y dibuja el autocompletado del modo interactivo. El panel web usa el mismo archivo.
 - **`xrepost_hashtags.py`** hace lo mismo con los hashtags del comentario de una cita: normaliza el texto, guarda los usados y calcula las sugerencias del panel.
+- **`xrepost_labels.py`** es la única fuente de las etiquetas de resultado (`reposteado`, `citado con comentario`, `deshecho`…): la usan el motor, `--history` y el historial del panel, para que no se desincronicen.
+- **`xrepost_history.py`** es la única fuente de verdad sobre qué posts siguen reposteados y cuáles puede deshacer la herramienta (p. ej. tras un `undo_failed` el repost sigue vigente y el panel debe seguir ofreciendo deshacerlo). La usan el motor y el panel.
+- **`web/`** contiene el panel web local: un servidor de la biblioteca estándar (`web/app.py`) que invoca al mismo motor como subproceso y una interfaz estática (`web/static/`). Su guía completa —arranque, flujo, selección post a post, progreso en vivo, seguridad y pruebas— está en `web/README.md`.
 
 En el panel, la **papelera** a la derecha de «Cuentas» y de «Hashtag de la cita» borra el historial guardado de cada campo, con confirmación previa. Las sugerencias quedan vacías y solo se vuelven a llenar cuando se usan cuentas o hashtags de nuevo.
 
@@ -148,7 +154,7 @@ La skill queda en `~/.config/opencode/skills/browser-use/SKILL.md` y permite ped
 Chrome tiene que estar escuchando en `9222`. Desde Chrome 136 el debugging remoto está **bloqueado en el perfil por defecto**, así que se usa un perfil dedicado:
 
 ```bash
-google-chrome --user-data-dir="$HOME/.config/chrome-agent" \
+google-chrome --user-data-dir="$HOME/.local/state/xrepost/chrome-profile" \
               --remote-debugging-port=9222 &
 ```
 
@@ -367,6 +373,8 @@ https://x.com/search?q=from%3Akubernetesio%20since%3A2026-10-27%20until%3A2026-1
 
 - **Clics por JS, no por coordenadas.** El harness ofrece `click_at_xy` (ratón real), pero en X el `scroll()` por rueda se colgaba (`Input.dispatchMouseEvent timed out`). Solución: `element.click()` desde la página y scroll con `window.scrollBy`. Funciona porque React de X escucha eventos nativos de clic.
 - **Verificar contra el DOM, no contra "no dio error".** Un clic puede fallar en silencio; el cambio `retweet` → `unretweet` es la única prueba fiable.
+- **Cada ejecución trabaja en su propia pestaña.** El motor abre una pestaña nueva (`about:blank`) al empezar, navega solo en ella y la cierra al terminar o al cancelar el trabajo (el panel cancela con `SIGTERM`). Así las pestañas que dejes abiertas en el Chrome de CDP no se mueven, y tampoco el panel, que además vive en otra instancia de Chrome con perfil propio (`~/.cache/xrepost-web/panel-profile`).
+- **Solo el post abierto y una ejecución a la vez.** Los botones se buscan dentro del artículo del post indicado en la URL (no en toda la página, donde las respuestas también tienen `retweet`/`unretweet`), y `xrepost.sh` toma un `flock` sobre `$X_HISTORY.lock` para que el CLI y el panel no reposteén en paralelo.
 - **Fechas del `<time>`, no del texto visible.** X muestra "8h" o "Oct 27", que engaña al cruzar días u husos horarios.
 - **La fecha se escribe como campo enmascarado, no como texto libre.** El prompt inserta las barras, descarta días y meses imposibles al teclear y acepta al octavo dígito, así que no se puede escribir `2O/1O/2O26` ni `90/90/9090`. Se muestra en DD/MM/AAAA (el orden que usa el usuario) y se convierte a ISO por dentro para la búsqueda de X y el historial. La validación usa el calendario real (`date -d`) antes de abrir Chrome, y el rango se comprueba en el mismo paso: un error de fecha se detecta en segundos, no después de navegar.
 - **El alcance se pregunta explícitamente y se traduce a una variable.** «Solo originales» y «también retweets» son decisiones con consecuencias distintas sobre la cuenta; en vez de dejar que el usuario adivine el valor de `X_SKIP_RETWEETS`, el modo interactivo lo pregunta con las dos opciones descritas, recomienda la conservadora y respeta la variable si ya venía definida (útil para `cron`).
@@ -407,6 +415,8 @@ Al deshacer (`--undo-last` / `--undo`):
 | `no se pudo deshacer` | Se intentó pero `unretweet` sigue apareciendo |
 
 Además, si el historial ya tenía un post como reposteado, el listado avisa `(N ya reposteados en ejecuciones anteriores; usa --force para incluirlos)` y no lo procesa.
+
+El motor imprime una línea por post con el formato `  {estado}: {url}` (dos espacios iniciales). El panel web parsea esas líneas mientras la ejecución corre y las convierte en **progreso en vivo**: barra «X de Y» y etiqueta de estado en cada fila, sin esperar a que termine la tanda.
 
 Códigos de salida:
 
@@ -452,7 +462,7 @@ Errores típicos:
 - **Esto automatiza acciones en tu cuenta.** Un fallo del script actúa sobre tu cuenta real, no sobre una copia.
 - **Reglas de X:** el repost automatizado y masivo entra en sus políticas de automatización. Con pocos reposts, espaciados y sobre contenido propio o de cuentas que te autorizan, el riesgo es bajo; con cientos, la cuenta acaba limitada o suspendida.
 - **Recomendaciones:** `X_LIMIT` entre 3 y 10, `X_DELAY` entre 20 y 60 s, y no ejecutarlo en bucle.
-- **Sesión:** usa un perfil de Chrome dedicado (`~/.config/chrome-agent`), no tu perfil personal con banca y correo.
+- **Sesión:** usa un perfil de Chrome dedicado (`~/.local/state/xrepost/chrome-profile`), no tu perfil personal con banca y correo.
 - **Volumen alto:** el camino correcto es la API oficial (`POST /2/users/:id/retweets`), no el navegador.
 - **Credenciales:** el script nunca las toca; aprovecha la sesión ya iniciada.
 - **El historial no es un freno de seguridad.** Evita repetir lo ya hecho, pero no limita el volumen: `X_LIMIT` y `X_DELAY` siguen siendo la defensa principal.
@@ -499,7 +509,8 @@ Todo lo siguiente se probó con la cuenta real, dejándola sin cambios (donde se
 18. **Resumen de alcance**: la cabecera de cada ejecución muestra `alcance: solo publicaciones originales | respuestas: omitidas` (o la variante elegida).
 19. **Repost con cita (cuenta real)**: se publicó una cita del post de `@Docker` sobre Docker Sandboxes (28/10/2026) con el comentario `#Docker` desde `@rignack_X`; la ejecución terminó con `citado con comentario`, el historial guardó `quoted` y la cita se verificó en el perfil. Antes, el dry-run con `--quote "#ETECSA"` mostró `comentario de la cita: #ETECSA`, devolvió los 2 posts con fechas DD/MM/AAAA y no publicó nada.
 20. **Autocompletado de hashtags (panel real)**: el campo bajo «Cuentas» sugirió los hashtags usados, excluyó los ya escritos en el mismo campo, aceptó la elección con `↓`/`Enter` y añadió el espacio para el siguiente; `ETECSA, cuba` se normalizó a `#ETECSA #cuba` y un comentario sin hashtags válidos se rechazó con aviso.
-21. **Pruebas automáticas**: 22 pruebas del panel (incluye `/api/hashtags`, `/api/accounts/clear`, `/api/hashtags/clear`, validación de la cita y `X_QUOTE` en el entorno del motor), 8 de hashtags y 7 de cuentas.
+21. **Pruebas automáticas**: 40 pruebas del panel (31 de la API web —incluye `/api/hashtags`, `/api/accounts/clear`, `/api/hashtags/clear`, validación de la cita, selección parcial y progreso en el snapshot— y 9 del motor con la lista exacta), 8 de hashtags, 7 de cuentas y 12 de historial. En conjunto: `python3 -m pytest -q` → **67 pruebas + 18 subpruebas**.
+22. **Mejoras de la interfaz (Chrome headless real, motor simulado)**: se condujo el panel por CDP y se verificaron con capturas — vista previa de la cita con contador 280, error de fecha visible y accesible (`aria-invalid`), casillas por publicación con «Seleccionar todo / nada», conteo y nota de selección, filtro y orden del listado, diálogo de confirmación con conteo real (`3 de 3 seleccionadas (4 revisadas)`) y duración estimada, barra de progreso «X de Y» con estados por fila en vivo y log abierto, resultado final exacto, historial con el comentario de la cita y filtro, formulario recordado tras recarga, **reconexión a un trabajo en curso tras recargar**, deshacer con detalle de la tanda y N opcional (deshizo solo 1 de 3) y tarjetas en vista móvil (390 px).
 
 Capturas de esas pruebas: `~/Downloads/demo-5-x-home.png`, `~/Downloads/demo-6-repost-test.png`.
 

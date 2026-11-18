@@ -77,6 +77,7 @@
             </button>
             <ul id="quote-list" class="combo-list" role="listbox" aria-label="Hashtags usados antes" hidden></ul>
           </div>
+          <small id="quote-preview" class="quote-preview" hidden></small>
           <small id="quote-help">Si lo escribes, cada repost se publica como cita con ese comentario. Separa varios hashtags con comas o espacios; los usados antes se sugieren al escribir.</small>
         </div>
 
@@ -86,7 +87,7 @@
             <div class="date-field">
               <input id="from" name="from" type="text" inputmode="numeric" maxlength="10"
                      placeholder="DD/MM/AAAA" autocomplete="off" required
-                     aria-describedby="date-help">
+                     aria-describedby="date-help from-error">
               <button type="button" class="date-pick" data-pick="from"
                       aria-label="Elegir la fecha desde en el calendario" title="Abrir calendario">
                 <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
@@ -97,13 +98,14 @@
               </button>
               <input id="from-native" class="date-native" type="date" tabindex="-1" aria-hidden="true">
             </div>
+            <small class="date-error" id="from-error" hidden></small>
           </div>
           <div class="field">
             <label class="field-label" for="to">Hasta</label>
             <div class="date-field">
               <input id="to" name="to" type="text" inputmode="numeric" maxlength="10"
                      placeholder="DD/MM/AAAA" autocomplete="off" required
-                     aria-describedby="date-help">
+                     aria-describedby="date-help to-error">
               <button type="button" class="date-pick" data-pick="to"
                       aria-label="Elegir la fecha hasta en el calendario" title="Abrir calendario">
                 <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
@@ -114,6 +116,7 @@
               </button>
               <input id="to-native" class="date-native" type="date" tabindex="-1" aria-hidden="true">
             </div>
+            <small class="date-error" id="to-error" hidden></small>
           </div>
         </div>
         <small id="date-help" class="date-help">Formato día/mes/año (DD/MM/AAAA). Escríbelo o elígelo en el calendario; las barras salen solas.</small>
@@ -192,6 +195,10 @@
           <span class="muted" id="job-elapsed"></span>
           <button type="button" class="btn tiny ghost" id="job-cancel">Cancelar</button>
         </div>
+        <div class="job-progress" id="job-progress" hidden>
+          <div class="job-progress-track" aria-hidden="true"><span id="job-progress-bar"></span></div>
+          <span class="muted" id="job-progress-text"></span>
+        </div>
         <details class="log-box" id="log-box">
           <summary>Registro del motor</summary>
           <pre id="job-log" class="log"></pre>
@@ -204,10 +211,25 @@
         <p class="muted">Nada se repostea hasta que lo confirmes.</p>
       </div>
 
+      <div class="table-tools" id="table-tools" hidden>
+        <input type="search" id="posts-filter" placeholder="Filtrar por texto o cuenta…"
+               aria-label="Filtrar publicaciones">
+        <select id="posts-sort" aria-label="Ordenar publicaciones">
+          <option value="date-desc">Más recientes primero</option>
+          <option value="date-asc">Más antiguas primero</option>
+          <option value="author">Por cuenta (A–Z)</option>
+        </select>
+        <span class="muted" id="posts-count"></span>
+      </div>
+
       <div class="table-wrap" id="table-wrap" hidden>
         <table class="posts">
           <thead>
             <tr>
+              <th class="pick" id="pick-th" hidden>
+                <input type="checkbox" id="pick-all" checked
+                       aria-label="Seleccionar todas las publicaciones" title="Seleccionar todas">
+              </th>
               <th>Fecha</th>
               <th>Autor</th>
               <th>Publicación</th>
@@ -231,6 +253,8 @@
         <p class="muted">Reposts y deshaceres registrados por la herramienta. Solo se deshace lo que hizo ella.</p>
       </div>
       <div class="actions compact">
+        <input type="search" id="history-filter" class="history-filter"
+               placeholder="Filtrar historial…" aria-label="Filtrar historial">
         <button type="button" class="btn tiny ghost" id="refresh-history">Actualizar</button>
         <button type="button" class="btn tiny danger-ghost" id="undo-last">Deshacer última tanda</button>
       </div>
@@ -256,6 +280,9 @@
         <tbody id="history-body"></tbody>
       </table>
     </div>
+    <div class="history-more">
+      <button type="button" class="btn tiny ghost" id="history-more" hidden>Cargar más</button>
+    </div>
   </section>
 
   <dialog id="confirm-dialog" class="dialog">
@@ -278,6 +305,12 @@
     <form method="dialog" class="dialog-body">
       <h2 id="undo-title">Deshacer la última tanda</h2>
       <p id="undo-text">Se quitarán los reposts que la herramienta hizo en la última ejecución y que sigan vigentes.</p>
+      <div class="undo-detail" id="undo-detail" hidden></div>
+      <label class="undo-n" id="undo-n-label" hidden>
+        <span>Deshacer solo los últimos</span>
+        <input type="number" id="undo-n" min="1" max="50" step="1" placeholder="toda la tanda">
+        <span>reposts vigentes</span>
+      </label>
       <p class="muted">No se tocan los reposts que ya estaban antes en la cuenta.</p>
       <div class="actions">
         <button value="cancel" class="btn ghost">Cancelar</button>
