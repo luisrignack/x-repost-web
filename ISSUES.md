@@ -10,7 +10,7 @@ Scope: `xrepost.py`, `xrepost.sh`, `xrepost_accounts.py`, `xrepost_hashtags.py`,
 |---|---|
 | B1 keep-alive desync | **Fixed** — body drained on `_read_json` rejections; early POST rejections close the connection with `Connection: close`. Regression tests: `test_keep_alive_survives_rejected_post`, `test_early_rejection_closes_connection`. Live probe re-run: OK. |
 | B2 undo retry hidden | **Fixed** — new shared module `xrepost_history.py` (`history_state`) used by both engine and panel; `undoable` now follows the engine's state. Tests: `tests/test_history.py`, `test_undoable_survives_failed_undo`. Live probe re-run: OK. |
-| B3 untracked labels module | **Pending commit** — `xrepost_labels.py` exists and works; must be `git add`-ed together with the new `xrepost_history.py` and `tests/test_history.py` (commit not made; awaiting user). |
+| B3 untracked labels module | **Fixed — committed** in `d895ab5`: `xrepost_labels.py`, `xrepost_history.py` and `tests/test_history.py` are tracked. A fresh `git clone -b web-ui` passes the whole suite and imports the panel. `ci.sh` guards against regressions. |
 | B4 quote heuristic | **Fixed** — `quoted` now requires X's confirmation toast (link to the new post); otherwise `quote_unverified` (new label), which does not block retries. Tests: `test_quote_requires_confirmation_toast`, `test_quote_without_toast_is_not_marked_done`. Note: the toast selector is best-effort against X's DOM; verify once against the real site. |
 | B5 limit counts only successes | **Fixed** — circuit breaker stops the batch after 3 consecutive failures. Test: `test_circuit_breaker_stops_after_three_failures`. |
 | B6 malformed env crash | **Fixed** — `X_LIMIT`/`X_DELAY` parsed with a clear message and exit code 2. Test: `test_invalid_limit_exits_with_clear_message`. |
@@ -25,9 +25,10 @@ Scope: `xrepost.py`, `xrepost.sh`, `xrepost_accounts.py`, `xrepost_hashtags.py`,
 | M7 500 echoes exception text | Open (low risk, local-only tool). |
 | Improvements 2–4, 7 (pruning, collect tests, CI, shared module) | Shared module done (B2); pruning, `collect()` tests and CI still open. |
 
-Suite after fixes: **63 passed + 14 subtests** (was 42); `node --check`,
-`py_compile` and the engine's standalone fallback (no shared modules
-available) verified.
+Suite after fixes: **70 passed + 18 subtests** (baseline before the audit: 42);
+`node --check`, `py_compile` and the engine's standalone fallback (no shared
+modules available) verified. Run `./ci.sh` to reproduce all checks plus the
+tracked-import guard.
 
 ---
 
@@ -35,7 +36,7 @@ available) verified.
 
 | Check | Result |
 |---|---|
-| `python3 -m pytest` from repo root | 42 passed + 14 subtests (15 accounts/hashtags, 23 web API, 4 engine) |
+| `python3 -m pytest` from repo root | 70 passed + 18 subtests (audit baseline: 42 + 14) |
 | `python3 -m py_compile` (all Python files) | OK |
 | `bash -n xrepost.sh` | OK |
 | `node --check web/static/app.js` | OK |
@@ -204,8 +205,11 @@ local client.
 
 1. **Fix B1–B3** (desync, undoable logic, track `xrepost_labels.py`) —
    small changes, highest value.
-2. **Prune state**: `App.jobs` dict and `web/.runs/` grow without bound
-   (16 run directories already present). Keep the last ~20 jobs/runs.
+2. **Prune state — Done**: `MAX_JOBS = 20` and `App._prune_jobs()` keep the
+   newest 20 jobs in memory and on disk (called at startup and on every new
+   job), protecting the running job and its preview's `selected.json`.
+   3 regression tests added. Note: the 42 directories already on disk are
+   removed the next time the panel restarts with the new code.
 3. **Test gaps**: the fake-browser harness only covers the selected-URL
    repost path. Add cases for:
    - `collect()` filtering: replies, retweets, keyword match/exclude,
@@ -214,12 +218,12 @@ local client.
      never enabled;
    - `undo_one` / `--undo-last` / `--undo URL`, including `undo_failed`
      retry (would have caught B2).
-4. **CI + linters**: no CI exists. Add a workflow running `pytest`,
-   `ruff` and `shellcheck`; it would catch the B3 class of bug
-   (untracked import) automatically.
+4. **CI — Partly done**: `./ci.sh` runs pytest, `py_compile`, `bash -n`,
+   `node --check` and a tracked-import guard that fails with exit 1 on the B3
+   class of bug (verified by untracking a module on purpose). Still open: a
+   remote workflow with `ruff`/`shellcheck`.
 5. **Quote verification** (B4) before trusting history for quotes.
 6. **Action cap / circuit breaker** (B5) to bound browser actions per run.
-7. **Shared history state module**: one implementation of
-   `history_state` used by engine, `--history` and panel, so labels and
-   undoability never drift again (extends the `xrepost_labels.py`
-   pattern).
+7. **Shared history state module — Done**: `xrepost_history.py` is the single
+   source used by the engine, `--history` and the panel (B2 fix), committed
+   together with `xrepost_labels.py`.

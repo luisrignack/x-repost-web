@@ -50,6 +50,7 @@ import xrepost_labels  # noqa: E402
 
 MAX_BODY = 1_000_000
 MAX_LOG = 2_000
+MAX_JOBS = 20
 MAX_JOB_SECONDS = 30 * 60
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -338,6 +339,41 @@ class App:
         self.jobs: dict[str, Job] = {}
         self.current: Job | None = None
         self.lock = threading.Lock()
+        self._prune_jobs()
+
+    def _prune_jobs(self) -> None:
+        """Conserva los últimos MAX_JOBS trabajos (memoria y disco).
+
+        Nunca toca el trabajo en curso ni la previsualización en la que se
+        apoya un ``apply`` en marcha (su ``selected.json`` vive en ese
+        directorio). Los directorios huérfanos de sesiones anteriores se
+        recortan por fecha de modificación.
+        """
+        with self.lock:
+            ordered = sorted(self.jobs.values(), key=lambda j: j.started, reverse=True)
+            keep_ids = {j.id for j in ordered[:MAX_JOBS]}
+            if self.current is not None:
+                keep_ids.add(self.current.id)
+                preview_id = self.current.params.get("preview_id")
+                if preview_id:
+                    keep_ids.add(preview_id)
+            doomed = [j for j in self.jobs.values() if j.id not in keep_ids]
+            for job in doomed:
+                self.jobs.pop(job.id, None)
+            keep_dirs = {j.dir.name for j in self.jobs.values()}
+            try:
+                dirs = sorted(
+                    (p for p in self.runs.iterdir() if p.is_dir()),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+            except OSError:
+                dirs = []
+            extra = [p for p in dirs[MAX_JOBS:] if p.name not in keep_dirs]
+        for job in doomed:
+            shutil.rmtree(job.dir, ignore_errors=True)
+        for path in extra:
+            shutil.rmtree(path, ignore_errors=True)
 
     def suggest_accounts(
         self,
@@ -404,6 +440,7 @@ class App:
             job = Job(kind, params, self.runs)
             self.jobs[job.id] = job
             self.current = job
+        self._prune_jobs()
         threading.Thread(target=self._run_job, args=(job,), daemon=True).start()
         return job
 

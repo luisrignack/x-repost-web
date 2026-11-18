@@ -21,6 +21,9 @@ shopt -u nullglob
 echo "== node --check =="
 node --check web/static/app.js
 
+echo "== copia portable sincronizada =="
+./sync_portable.sh --check
+
 echo "== imports locales trackeados =="
 status=0
 modules=$(grep -hoE '^import xrepost_[a-z_]+' xrepost*.py web/app.py | awk '{print $2}' | sort -u)

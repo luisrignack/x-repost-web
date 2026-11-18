@@ -15,7 +15,7 @@ import time
 import unittest
 from pathlib import Path
 
-from app import App, create_server, main, read_history
+from app import App, Job, MAX_JOBS, create_server, main, read_history
 
 
 STUB = textwrap.dedent(
@@ -847,6 +847,57 @@ class WebTest(unittest.TestCase):
         self.assertEqual(entries[0]["quote"], "")
         self.assertEqual(entries[1]["quote"], "#ETECSA #cuba")
         self.assertTrue(all(e["run"] == "tanda-1" for e in entries))
+
+    def test_prune_jobs_mantiene_ultimos_y_sus_directorios(self):
+        creados = []
+        for i in range(MAX_JOBS + 5):
+            job = Job("preview", {}, self.app.runs)
+            job.started += i
+            job.dir.mkdir(parents=True)
+            (job.dir / "posts.csv").write_text("x", encoding="utf-8")
+            self.app.jobs[job.id] = job
+            creados.append(job)
+
+        self.app._prune_jobs()
+
+        self.assertEqual(len(self.app.jobs), MAX_JOBS)
+        for job in creados[:-MAX_JOBS]:
+            self.assertNotIn(job.id, self.app.jobs)
+            self.assertFalse(job.dir.exists())
+        for job in creados[-MAX_JOBS:]:
+            self.assertIn(job.id, self.app.jobs)
+            self.assertTrue(job.dir.exists())
+
+    def test_prune_borra_directorios_huerfanos_de_sesiones_anteriores(self):
+        huerfanos = []
+        for i in range(MAX_JOBS + 2):
+            path = self.app.runs / f"huerfano-{i:02d}"
+            path.mkdir(parents=True)
+            huerfanos.append(path)
+
+        self.app._prune_jobs()
+
+        supervivientes = [p for p in huerfanos if p.exists()]
+        self.assertEqual(len(supervivientes), MAX_JOBS)
+
+    def test_prune_no_toca_job_en_curso_ni_su_previsualizacion(self):
+        creados = []
+        for _ in range(MAX_JOBS + 2):
+            job = Job("preview", {}, self.app.runs)
+            job.dir.mkdir(parents=True)
+            self.app.jobs[job.id] = job
+            creados.append(job)
+        actual, preview = creados[0], creados[1]
+        self.app.current = actual
+        actual.params["preview_id"] = preview.id
+
+        self.app._prune_jobs()
+
+        for job in (actual, preview):
+            self.assertIn(job.id, self.app.jobs)
+            self.assertTrue(job.dir.exists())
+        # Los dos protegidos se suman a los 20 más recientes.
+        self.assertEqual(len(self.app.jobs), MAX_JOBS + 2)
 
 
 if __name__ == "__main__":
