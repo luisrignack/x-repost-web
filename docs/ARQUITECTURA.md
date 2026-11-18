@@ -49,7 +49,8 @@ El CLI es la interfaz original y el panel no la sustituye: el panel invoca
 | --- | --- |
 | `xrepost_history.py` | Esquema de eventos, lectura tolerante, estado repost/undo, diagnóstico, backup, restore, rotación. |
 | `xrepost_jobs.py` | Registro persistente de trabajos, estados canónicos, recuperación tras reinicio, poda. |
-| `xrepost_inbox.py` | Bandeja de revisión y máquina de estados de cada publicación. |
+| `xrepost_inbox.py` | Bandeja de revisión persistente, decisiones y reconciliación con el motor. |
+| `xrepost_state.py` | Máquina de estados canónica por publicación y validación de transiciones. |
 | `xrepost_filters.py` | Normalización y validación de filtros, perfiles guardables, import/export. |
 | `xrepost_groups.py` | Grupos de cuentas, alias, favoritos y estadísticas por cuenta. |
 | `xrepost_schedule.py` | Programaciones (solo previsualización), próxima ejecución, vencimientos. |

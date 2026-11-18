@@ -283,10 +283,39 @@ Se conservan:
 - `X-Token` para clientes de línea de comandos.
 - Estructura de `accounts.json` y `hashtags.json`.
 
+## Verificación de la rama (2026-11-18)
+
+La primera ejecución de CI en GitHub reveló dos fallos reales que el informe
+anterior no había detectado porque solo se había ejecutado el CI local:
+
+1. `ruff` fallaba con 43 `F821` en `xrepost.py`: las funciones que inyecta
+   `browser-use` (`js`, `goto_url`, `wait_for_load`…) no estaban declaradas.
+   Se añadió un bloque `_injected(...)` documentado que las resuelve del espacio
+   de nombres y falla con un mensaje claro si el harness cambia.
+2. `xrepost_exports.py` usaba una f-string con escapes y comillas anidadas que
+   solo es válida en Python 3.12; se reescribió para 3.10+.
+
+Además se corrigió un token de ejemplo real en `ABRIR_LA_APLICACION.md`, se
+excluyó la copia portable del análisis de Ruff y se añadió `ruff.toml`.
+
+## Cobertura y pruebas
+
+- 171 pruebas + 18 subpruebas.
+- 91 % en los módulos de negocio (umbral de CI: 90 %); 85 % total.
+- 35 pruebas nuevas para `fs`, `filters`, `cdp`, `schedule`, `security`,
+  `groups`, `history` y `state`.
+- `bandit -ll`: 0 hallazgos medium/high (12 low de `try/except pass`
+  justificados).
+- `gitleaks` sobre el árbol actual: sin fugas.
+
 ## Deuda pendiente
 
-- Retirar la cookie heredada `xrepost_token`.
-- Medir la cobertura real en un entorno con `coverage`.
+- Retirar la cookie heredada `xrepost_token` (hoy solo permite lectura).
+- Purificar el token de ejemplo del historial de git (`10d3896`); requiere
+  reescribir la rama y `push --force`.
+- Resolver los errores de `mypy` de los módulos históricos (hoy informativo).
 - Añadir pruebas end-to-end contra una cuenta de prueba cuando esté
   autorizado.
 - Valorar TLS si el panel dejara de ser local.
+- Interfaz: paginación, copiar enlace, importación de cuentas y navegación
+  lateral (ver `INFORME_FINAL_MODERNIZACION.md`, sección D).

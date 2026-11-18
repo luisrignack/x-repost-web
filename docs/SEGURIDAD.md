@@ -192,7 +192,20 @@ Comprobaciones manuales recomendadas:
 - Enviar `Host: evil.example`: debe devolver 403.
 - Ejecutar `xrepost.sh --strict-cdp` con un CDP remoto: debe rechazarlo.
 
-## 12. Limitaciones conocidas
+## 12. Escaneo de secretos y dependencias
+
+- `gitleaks` se ejecuta en CI sobre el árbol de trabajo (`--no-git`) y no debe
+  encontrar nada. El historial de git contiene un token de ejemplo de una
+  ejecución local en el commit `10d3896`; ya no es válido, pero un escaneo con
+  historial lo marcaría hasta que se purifique la rama.
+- `pip-audit` audita `requirements.txt`, que no declara dependencias de
+  ejecución: la aplicación usa solo la biblioteca estándar.
+- `bandit -ll` se ejecuta sin hallazgos medium/high. Los avisos low son
+  `try/except pass` deliberados en cierres de recursos.
+- Los ejemplos de la documentación usan `<token-aleatorio>`, nunca un token
+  real.
+
+## 13. Limitaciones conocidas
 
 - El panel no implementa TLS: es exclusivamente local.
 - No hay autenticación multifactor; el token maestro es la única credencial.

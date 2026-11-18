@@ -25,7 +25,10 @@ No usa la API de X ni pide contraseñas: controla tu navegador real mediante CDP
 | [Desarrollo](docs/DESARROLLO.md) | Convenciones y flujo de trabajo. |
 | [Pruebas](docs/TESTING.md) | Suite, cobertura y límites. |
 | [Changelog técnico](docs/CHANGELOG_TECNICO.md) | Cambios por fase. |
-| [Informe final](docs/INFORME_FINAL_MODERNIZACION.md) | Resultados y deuda pendiente. |
+| [Informe final](docs/INFORME_FINAL_MODERNIZACION.md) | Resultados, criterios de aceptación y deuda pendiente. |
+| [Seguridad del repositorio](SECURITY.md) | Cómo informar de vulnerabilidades y alcance. |
+| [Contribuir](CONTRIBUTING.md) | Entorno, estilo y guardas antes de un cambio. |
+| [Changelog](CHANGELOG.md) | Versiones y cambios visibles. |
 
 ---
 
@@ -549,7 +552,7 @@ Todo lo siguiente se probó con la cuenta real, dejándola sin cambios (donde se
 18. **Resumen de alcance**: la cabecera de cada ejecución muestra `alcance: solo publicaciones originales | respuestas: omitidas` (o la variante elegida).
 19. **Repost con cita (cuenta real)**: se publicó una cita del post de `@Docker` sobre Docker Sandboxes (28/10/2026) con el comentario `#Docker` desde `@rignack_X`; la ejecución terminó con `citado con comentario`, el historial guardó `quoted` y la cita se verificó en el perfil. Antes, el dry-run con `--quote "#ETECSA"` mostró `comentario de la cita: #ETECSA`, devolvió los 2 posts con fechas DD/MM/AAAA y no publicó nada.
 20. **Autocompletado de hashtags (panel real)**: el campo bajo «Cuentas» sugirió los hashtags usados, excluyó los ya escritos en el mismo campo, aceptó la elección con `↓`/`Enter` y añadió el espacio para el siguiente; `ETECSA, cuba` se normalizó a `#ETECSA #cuba` y un comentario sin hashtags válidos se rechazó con aviso.
-21. **Pruebas automáticas**: 40 pruebas del panel (31 de la API web —incluye `/api/hashtags`, `/api/accounts/clear`, `/api/hashtags/clear`, validación de la cita, selección parcial y progreso en el snapshot— y 9 del motor con la lista exacta), 8 de hashtags, 7 de cuentas y 12 de historial. En conjunto: `python3 -m pytest -q` → **67 pruebas + 18 subpruebas**.
+21. **Pruebas automáticas**: 55 pruebas del panel, 15 del motor con la lista exacta, 12 de historial, 10 de red, 8 de hashtags, 7 de cuentas, 5 de arranque y 59 de los módulos nuevos. En conjunto: `python3 -m pytest -q` → **171 pruebas + 18 subpruebas**, con 91 % de cobertura en la lógica de negocio (ver [`docs/TESTING.md`](docs/TESTING.md)).
 22. **Mejoras de la interfaz (Chrome headless real, motor simulado)**: se condujo el panel por CDP y se verificaron con capturas — vista previa de la cita con contador 280, error de fecha visible y accesible (`aria-invalid`), casillas por publicación con «Seleccionar todo / nada», conteo y nota de selección, filtro y orden del listado, diálogo de confirmación con conteo real (`3 de 3 seleccionadas (4 revisadas)`) y duración estimada, barra de progreso «X de Y» con estados por fila en vivo y log abierto, resultado final exacto, historial con el comentario de la cita y filtro, formulario recordado tras recarga, **reconexión a un trabajo en curso tras recargar**, deshacer con detalle de la tanda y N opcional (deshizo solo 1 de 3) y tarjetas en vista móvil (390 px).
 
 Capturas de esas pruebas: `~/Downloads/demo-5-x-home.png`, `~/Downloads/demo-6-repost-test.png`.
@@ -596,3 +599,32 @@ Sí, con `cron` o `systemd --user`, siempre con `X_LIMIT` bajo.
 
 **¿Dónde está el límite de "demasiado"?**
 Cuando X empieza a mostrar `no se pudo confirmar` de forma repetida. Ahí hay que parar y bajar el ritmo.
+
+---
+
+## 14. Desarrollo, pruebas y licencia
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+bash ./ci.sh
+```
+
+La aplicación **no tiene dependencias de ejecución**: solo la biblioteca
+estándar de Python y Chrome. `requirements-dev.txt` fija las herramientas de
+pruebas y CI (`pytest`, `coverage`, `ruff`, `bandit`, `pip-audit`, `mypy`).
+
+Guarda de calidad local: `ci.sh` ejecuta pytest, `py_compile`, `bash -n`,
+`node --check`, la sincronización de la copia portable y la comprobación de
+imports. GitHub Actions añade Ruff, ShellCheck, Bandit, Gitleaks, pip-audit,
+cobertura con umbral del 90 %, SBOM CycloneDX y un paquete `tar.gz` con
+`SHA256SUMS`.
+
+**Licencia:** todavía no hay una licencia elegida. Consulta
+[`LICENSE_PENDING.md`](LICENSE_PENDING.md); hasta que el titular añada un
+`LICENSE`, el código queda con todos los derechos reservados. No se ha
+inventado una licencia.
+
+**Seguridad:** para informar de una vulnerabilidad, sigue
+[`SECURITY.md`](SECURITY.md) y no abras un issue público con detalles
+explotables.

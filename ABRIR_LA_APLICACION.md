@@ -198,7 +198,7 @@ La terminal imprime algo como:
 
 ```
   xrepost · panel local
-  Panel:     http://127.0.0.1:8765/?token=1uttlYxjUQAIzuXU5zpyf6dj
+  Panel:     http://127.0.0.1:8765/?token=<token-aleatorio>
   Motor:     .../xrepost.sh
   ...
 ```
