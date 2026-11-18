@@ -28,6 +28,12 @@
 #   --history [N]       ver los últimos N movimientos (20 por defecto)
 #   --undo-last [N]     deshacer la última tanda (o los últimos N reposts)
 #   --undo URL|ID       deshacer un repost concreto
+#   --stats [DÍAS]      estadísticas reales del historial (30 días por defecto)
+#   --diagnose          integridad del historial y del entorno
+#   --backup [RUTA]     copia verificable del historial (y archivos rotados)
+#   --restore RUTA      restaurar un backup verificado
+#   --strict-cdp        exigir que CDP sea local y del perfil de xrepost
+#   --version           versión y rutas efectivas
 #   -h, --help          esta ayuda
 #
 # Variables opcionales:
@@ -48,6 +54,7 @@
 # Hashtags:  ~/.local/state/xrepost/hashtags.json  (cambiable con X_HASHTAGS)
 
 set -euo pipefail
+umask 077
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # El motor se ejecuta por stdin y no tiene `__file__`: le decimos dónde está el
@@ -229,6 +236,10 @@ MODE="repost"
 UNDO_TARGET=""
 UNDO_N=""
 HISTORY_N=""
+STATS_DAYS="30"
+BACKUP_DEST=""
+RESTORE_PATH=""
+STRICT_CDP=0
 CSV=""
 MD=""
 QUOTE="${X_QUOTE:-}"
@@ -239,6 +250,22 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help)
       usage; exit 0 ;;
+    --version)
+      printf 'xrepost 2.0\nproyecto: %s\nhistorial: %s\n' "$SELF_DIR" "$X_HISTORY"
+      exit 0 ;;
+    --stats)
+      MODE="stats"; shift
+      if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then STATS_DAYS="$1"; shift; fi ;;
+    --diagnose)
+      MODE="diagnose"; shift ;;
+    --backup)
+      MODE="backup"; shift
+      if [ $# -gt 0 ] && [[ "$1" != -* ]]; then BACKUP_DEST="$1"; shift; fi ;;
+    --restore)
+      [ $# -ge 2 ] || { echo "Falta la ruta de --restore" >&2; exit 1; }
+      MODE="restore"; RESTORE_PATH="$2"; shift 2 ;;
+    --strict-cdp)
+      STRICT_CDP=1; shift ;;
     --csv)
       [ $# -ge 2 ] || { echo "Falta la ruta de --csv" >&2; exit 1; }
       CSV="$2"; shift 2 ;;
@@ -302,6 +329,45 @@ for line in sel:
           f"{LABELS.get(result, result):24} {handle:18} {e.get('url', '')}")
 PY
   exit 0
+fi
+
+if [ "$MODE" = "stats" ] || [ "$MODE" = "diagnose" ] || [ "$MODE" = "backup" ] || [ "$MODE" = "restore" ]; then
+  python3 - "$MODE" "$X_HISTORY" "$SELF_DIR" "$STATS_DAYS" "$BACKUP_DEST" "$RESTORE_PATH" <<'PY'
+import json, sys
+
+mode, history, self_dir, days, backup_dest, restore_path = sys.argv[1:7]
+sys.path.insert(0, self_dir)
+import xrepost_history
+import xrepost_stats
+
+if mode == "stats":
+    data = xrepost_stats.compute(history, days=max(1, min(int(days or 30), 365)))
+    print(f"Historial: {history}")
+    print(f"Eventos: {data['total_events']} | confirmados: {data['confirmed_total']} | "
+          f"deshechos: {data['undone']} | fallos: {data['failed']} | sin confirmar: {data['unknown']}")
+    print(f"Tasa de confirmación: {data['confirmation_rate']}% "
+          f"({data['confirmed_total']}/{data['rate_denominator']})")
+    print(f"Trabajos: {data['jobs']}")
+    for item in data["by_account"][:10]:
+        print(f"  @{item['handle']}: reposts={item['reposts']} citas={item['quotes']} "
+              f"deshechos={item['undone']} fallos={item['failed']} último={item['last']}")
+elif mode == "diagnose":
+    report = xrepost_history.diagnose(history)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+elif mode == "backup":
+    dest = backup_dest or None
+    report = xrepost_history.backup(history, dest=dest)
+    print("Backup creado:")
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+elif mode == "restore":
+    if not restore_path:
+        print("Falta la ruta del backup", file=sys.stderr)
+        raise SystemExit(2)
+    report = xrepost_history.restore(history, restore_path)
+    print("Restauración completada:")
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+PY
+  exit $?
 fi
 
 if [ "$MODE" = "repost" ]; then
@@ -408,11 +474,28 @@ export X_SKIP_REPLIES="${X_SKIP_REPLIES:-1}"
 export X_SKIP_RETWEETS="${X_SKIP_RETWEETS:-1}"
 export X_MATCH="${X_MATCH:-}"
 export X_EXCLUDE="${X_EXCLUDE:-}"
+export X_EXACT="${X_EXACT:-}"
+export X_INCLUDE_REGEX="${X_INCLUDE_REGEX:-}"
+export X_EXCLUDE_REGEX="${X_EXCLUDE_REGEX:-}"
+export X_LANG="${X_LANG:-}"
+export X_HASHTAGS_FILTER="${X_HASHTAGS_FILTER:-}"
+export X_MIN_LEN="${X_MIN_LEN:-}"
+export X_MAX_LEN="${X_MAX_LEN:-}"
+export X_MEDIA="${X_MEDIA:-}"
+export X_VIDEO="${X_VIDEO:-}"
+export X_KIND="${X_KIND:-}"
 export X_QUOTE="$QUOTE"
 export X_FORCE="$FORCE"
 export X_CSV="$CSV"
 export X_MD="$MD"
 export BU_CDP_URL="${BU_CDP_URL:-http://127.0.0.1:9222}"
+
+if [ "$STRICT_CDP" = "1" ] && [ "$MODE" != "history" ]; then
+  if ! python3 "$SELF_DIR/xrepost_cdp.py" --url "$BU_CDP_URL"; then
+    echo "CDP no cumple las condiciones de seguridad; no se ejecuta." >&2
+    exit 1
+  fi
+fi
 
 # Una sola ejecución a la vez: el CLI y el panel comparten Chrome y el
 # historial, y dos tandas simultáneas podrían repostear lo mismo dos veces.

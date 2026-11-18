@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, web-ui]
+    branches: [main, web-ui, modernizacion-integral]
   pull_request:
-    branches: [main, web-ui]
+    branches: [main, web-ui, modernizacion-integral]
 
 jobs:
   verify:
@@ -19,7 +19,7 @@ jobs:
       - name: Instalar herramientas
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest ruff
+          python -m pip install pytest ruff coverage
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
 
@@ -30,7 +30,15 @@ jobs:
 
       # Solo errores (no warnings de estilo) para no bloquear por deuda antigua.
       - name: ShellCheck
-        run: shellcheck -S error xrepost.sh web/run.sh ci.sh sync_portable.sh
+        run: shellcheck -S error xrepost.sh iniciar.sh web/run.sh ci.sh sync_portable.sh xrepost-chrome.sh
 
-      - name: Suite y guardas (pytest, sintaxis, portable, imports trackeados)
+      - name: Sintaxis JavaScript
+        run: node --check web/static/app.js
+
+      - name: Cobertura de los módulos nuevos (informativa)
+        run: |
+          python -m coverage run --branch -m pytest -q
+          python -m coverage report --include='xrepost_fs.py,xrepost_store.py,xrepost_filters.py,xrepost_cdp.py,xrepost_security.py,xrepost_jobs.py,xrepost_exports.py,xrepost_groups.py,xrepost_inbox.py,xrepost_schedule.py,xrepost_stats.py,xrepost_history.py'
+
+      - name: Suite y guardas (pytest, sintaxis, portable, imports)
         run: bash ./ci.sh

@@ -24,15 +24,17 @@ node --check web/static/app.js
 echo "== copia portable sincronizada =="
 ./sync_portable.sh --check
 
-echo "== imports locales trackeados =="
+echo "== imports locales presentes =="
 status=0
 modules=$(grep -hoE '^import xrepost_[a-z_]+' xrepost*.py web/app.py | awk '{print $2}' | sort -u)
 for m in $modules; do
-    if git ls-files --error-unmatch "$m.py" >/dev/null 2>&1; then
+    if [ ! -f "$m.py" ]; then
+        echo "  FALTA $m.py (el panel no arrancará)"
+        status=1
+    elif git ls-files --error-unmatch "$m.py" >/dev/null 2>&1; then
         echo "  OK $m"
     else
-        echo "  FALTA $m.py (no trackeado: el panel romperá en un clone fresco)"
-        status=1
+        echo "  AVISO $m.py existe pero aún no está en git (recuerda añadirlo al commitear)"
     fi
 done
 

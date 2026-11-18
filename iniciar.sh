@@ -10,11 +10,17 @@
 # Es idempotente: si el panel o Chrome ya están arriba, los reutiliza.
 
 set -euo pipefail
+umask 077
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 export PATH="$HOME/.local/bin:$PATH"
 
-PANEL_LOG="${XREPOST_PANEL_LOG:-/var/tmp/xrepost-panel.log}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/xrepost"
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR" 2>/dev/null || true
+PANEL_LOG="${XREPOST_PANEL_LOG:-$STATE_DIR/panel.log}"
+TOKEN_FILE="${XREPOST_TOKEN_FILE:-$STATE_DIR/panel-token}"
+BOOTSTRAP_FILE="${XREPOST_BOOTSTRAP_FILE:-$STATE_DIR/panel-url}"
 CDP_URL="${BU_CDP_URL:-http://127.0.0.1:9222}"
 PORT="${XREPOST_PORT:-8765}"
 BASE="http://127.0.0.1:$PORT"
@@ -113,7 +119,10 @@ echo "== 3/3 Panel web =="
 if panel_up; then
     echo "  ya estaba arriba en $BASE/"
 else
-    nohup python3 -u "$DIR/web/app.py" --no-open --port "$PORT" >"$PANEL_LOG" 2>&1 &
+    rm -f "$BOOTSTRAP_FILE"
+    nohup python3 -u "$DIR/web/app.py" --no-open --port "$PORT" \
+        --token-file "$TOKEN_FILE" --bootstrap-file "$BOOTSTRAP_FILE" \
+        >"$PANEL_LOG" 2>&1 &
     listo=0
     for _ in $(seq 1 40); do
         panel_up && { listo=1; break; }
@@ -127,12 +136,13 @@ else
     echo "  arrancado en $BASE/"
 fi
 
-TOKEN="$(grep -oE 'token=[A-Za-z0-9_-]+' "$PANEL_LOG" 2>/dev/null | tail -1 | cut -d= -f2 || true)"
 URL="$BASE/"
-[ -n "$TOKEN" ] && URL="$BASE/?token=$TOKEN"
+if [ -f "$BOOTSTRAP_FILE" ]; then
+    URL="$(cat "$BOOTSTRAP_FILE")"
+fi
 echo
 echo "Listo. Abre: $URL"
-echo "(El token es aleatorio; si la cookie ya está guardada, basta $BASE/)"
+echo "(El enlace de arranque está en $BOOTSTRAP_FILE, solo para tu usuario.)"
 if [ "$NO_OPEN" -eq 0 ]; then
     python3 -m webbrowser -t "$URL" >/dev/null 2>&1 || true
 fi

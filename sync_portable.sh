@@ -7,13 +7,17 @@ cd "$(dirname "$0")"
 
 DST=xrepost-portable
 FILES=(
-    README.md ABRIR_LA_APLICACION.md pytest.ini
+    README.md ABRIR_LA_APLICACION.md pytest.ini ci.sh
     xrepost.py xrepost.sh xrepost_accounts.py xrepost_hashtags.py
     xrepost_history.py xrepost_labels.py xrepost_network.py xrepost-chrome.sh
+    xrepost_fs.py xrepost_selectors.py xrepost_store.py xrepost_filters.py
+    xrepost_cdp.py xrepost_security.py xrepost_jobs.py xrepost_exports.py
+    xrepost_groups.py xrepost_inbox.py xrepost_schedule.py xrepost_stats.py
     proxy_empresa.pac proxy_auto.pac
     web/app.py web/run.sh web/README.md web/test_app.py web/test_engine_selected.py
     web/static/app.js web/static/index.html web/static/styles.css
-    tests/test_accounts.py tests/test_hashtags.py tests/test_history.py tests/test_network.py tests/test_start_script.py
+    tests/test_accounts.py tests/test_hashtags.py tests/test_history.py tests/test_network.py
+    tests/test_start_script.py tests/test_core_modules.py
 )
 
 if [ "${1:-}" = "--check" ]; then
