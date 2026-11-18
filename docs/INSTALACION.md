@@ -124,12 +124,28 @@ La carpeta `xrepost-portable/` contiene todo lo necesario para otro equipo:
 
 ```bash
 cd xrepost-portable
-chmod +x start.sh xrepost.sh web/run.sh
-./start.sh
+./instalar.sh              # requisitos + acceso directo ejecutable
 ```
 
-`start.sh` comprueba requisitos y solo instala lo que falta con consentimiento
-explícito. La copia se regenera desde el repositorio con:
+`instalar.sh` comprueba los requisitos (y solo instala lo que falta con
+consentimiento explícito), deja los lanzadores ejecutables y crea **X-Repost**
+en el escritorio y en el menú de aplicaciones, con el icono propio de la
+carpeta. El acceso queda marcado como de confianza para que el doble clic
+funcione. Para recrear solo el acceso, sin tocar dependencias:
+
+```bash
+./instalar.sh --no-deps
+```
+
+El lanzamiento directo (mismo comportamiento que el acceso) y el modo clásico
+de terminal siguen disponibles:
+
+```bash
+./abrir-xrepost.sh         # X y el panel en dos pestañas
+./start.sh                 # panel en ventana aparte
+```
+
+La copia se regenera desde el repositorio con:
 
 ```bash
 ./sync_portable.sh

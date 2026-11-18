@@ -35,7 +35,13 @@ class StartScriptTest(unittest.TestCase):
         )
 
     def test_sintaxis_de_los_scripts(self):
-        for script in (START, CHROME, ROOT / "xrepost-portable" / "start.sh"):
+        scripts = [START, CHROME]
+        # En el repo también se valida la copia portable; dentro de la propia
+        # copia portable esa ruta anidada no existe y START ya es ese script.
+        portable_start = ROOT / "xrepost-portable" / "start.sh"
+        if portable_start.is_file():
+            scripts.append(portable_start)
+        for script in scripts:
             proc = subprocess.run(
                 ["bash", "-n", str(script)], capture_output=True, text=True, timeout=10
             )

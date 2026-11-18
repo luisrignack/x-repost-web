@@ -338,14 +338,25 @@ Variables principales: `X_USERS`, `X_FROM`, `X_TO`, `X_MATCH`, `X_EXCLUDE`, `X_S
 
 ## 7. Otra PC o sin internet
 
-La carpeta **`xrepost-portable/`** es autocontenida: motor, panel, tests, `start.sh` y guía. No depende del repo ni del worktree.
+La carpeta **`xrepost-portable/`** es autocontenida: motor, panel, tests, lanzadores y guía. No depende del repo ni del worktree.
 
 ```bash
 # En la PC de destino (copiar la carpeta, p. ej. con USB):
 cd xrepost-portable
-cat SETUP.md                # guía completa
-./install-deps.sh           # comprueba e instala solo tras confirmación
-./start.sh                  # Chrome CDP + panel
+./instalar.sh               # requisitos + acceso directo ejecutable
+```
+
+`instalar.sh` comprueba e instala lo que falte (con confirmación), deja los scripts ejecutables y crea **X-Repost** en el escritorio y en el menú de aplicaciones. El acceso ya está marcado como de confianza: doble clic y se abren X y el panel en dos pestañas. Si solo quieres recrear el acceso sin tocar dependencias:
+
+```bash
+./instalar.sh --no-deps
+```
+
+Alternativas sin acceso directo:
+
+```bash
+./abrir-xrepost.sh          # mismo lanzamiento desde una terminal
+./start.sh                  # modo clásico: panel en ventana aparte (Ctrl-C lo detiene)
 ```
 
 El panel y el motor funcionan sin internet salvo para llegar a X. No hay llamadas a proveedores de IA ni telemetría de la librería agente (no se usa).

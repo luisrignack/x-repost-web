@@ -23,6 +23,7 @@ build/
 *.egg-info/
 
 # Copia portable generada por sync_portable.sh.
-# Solo se versiona el lanzador; el resto se regenera en cada sincronización.
+# Se versionan el lanzador y la guía; el resto se regenera en cada sincronización.
 xrepost-portable/*
 !xrepost-portable/start.sh
+!xrepost-portable/SETUP.md
