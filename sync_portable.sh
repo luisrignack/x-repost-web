@@ -16,6 +16,10 @@ FILES=(
 )
 
 if [ "${1:-}" = "--check" ]; then
+    if [ ! -d "$DST" ]; then
+        echo "portable no presente; omitiendo (ejecuta ./sync_portable.sh para generarlo)"
+        exit 0
+    fi
     rc=0
     for f in "${FILES[@]}"; do
         if [ ! -f "$DST/$f" ]; then
