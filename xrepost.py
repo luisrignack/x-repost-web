@@ -132,6 +132,8 @@ HISTORY = os.environ.get("X_HISTORY") or os.path.join(
 
 SKIPPED_RT = 0
 SKIPPED_KW = 0
+SEARCH_TRUNCATED = 0  # búsquedas que llegaron al tope por cuenta
+SEARCH_TOTAL = 0  # publicaciones que devolvió la búsqueda (antes de filtrar)
 SEEN = set()  # URLs ya aceptadas; global para no duplicar entre usuarios
 
 
@@ -152,7 +154,12 @@ def _load_shared(module, attr):
 
 
 LABELS = _load_shared("xrepost_labels", "LABELS") or {}
-_UNCERTAIN = _load_shared("xrepost_labels", "UNCERTAIN_RESULTS") or ("unconfirmed", "quote_unverified")
+_UNCERTAIN = _load_shared("xrepost_labels", "UNCERTAIN_RESULTS") or (
+    "unconfirmed",
+    "quote_unverified",
+    "quote_pending",
+    "quote_submitted",
+)
 _FATAL = _load_shared("xrepost_labels", "FATAL_RESULTS") or (
     "session_expired",
     "captcha",
@@ -577,19 +584,28 @@ def reposted_ids(entries):
 
 
 def uncertain_ids(entries):
-    """IDs con un intento cuyo resultado nunca se confirmó.
+    """IDs cuyo *último* intento quedó sin confirmar.
 
-    Se omiten en ejecuciones posteriores salvo ``--force``: reintentar a ciegas
-    puede duplicar un repost o una cita que sí se publicó.
+    Solo cuenta el último evento de cada publicación: un ``quote_pending``
+    seguido de ``quote_failed`` es un fallo conocido (se puede reintentar),
+    mientras que un ``quote_submitted`` sin evento final significa que el
+    proceso murió con la acción quizá aplicada. Se omiten en ejecuciones
+    posteriores salvo ``--force``: reintentar a ciegas puede duplicar un repost
+    o una cita que sí se publicó.
     """
-    reposted, ours = history_state(entries)
-    pending = set()
+    reposted, _ = history_state(entries)
+    latest: dict[str, dict] = {}
     for event in entries:
-        if event.get("result") in _UNCERTAIN and event.get("id"):
-            pending.add(str(event["id"]))
-        elif event.get("action") == "repost" and event.get("result") in ("reposted", "quoted", "already"):
-            pending.discard(str(event.get("id")))
-    return pending - reposted
+        item_id = str(event.get("id") or "")
+        if item_id:
+            latest[item_id] = event
+    return {
+        item_id
+        for item_id, event in latest.items()
+        if event.get("action") == "repost"
+        and event.get("result") in _UNCERTAIN
+        and item_id not in reposted
+    }
 
 
 def undo_candidates(entries, target="", n=0):
@@ -616,8 +632,67 @@ def wait_articles(timeout=12):
     return False
 
 
+def wait_until(expression, timeout=8.0, interval=0.25):
+    """Espera condicional acotada: nunca reintentos infinitos.
+
+    Sustituye pausas fijas por sondeos del DOM. Devuelve ``True`` en cuanto la
+    condición se cumple y ``False`` al agotar el presupuesto de intentos.
+    """
+    attempts = max(1, int(float(timeout) / max(0.05, float(interval))))
+    for _ in range(attempts):
+        try:
+            if js(expression):
+                return True
+        except Exception:
+            pass
+        time.sleep(interval)
+    return False
+
+
+def wait_until_any(expressions, timeout=8.0, interval=0.25):
+    """Espera acotada a que se cumpla cualquiera de varias condiciones."""
+    attempts = max(1, int(float(timeout) / max(0.05, float(interval))))
+    for _ in range(attempts):
+        for expression in expressions:
+            try:
+                if js(expression):
+                    return True
+            except Exception:
+                pass
+        time.sleep(interval)
+    return False
+
+
+def wait_post_ready(timeout=8.0):
+    """El botón de repost o el de «quitar repost» aparece al montar el post."""
+    half = max(1.0, float(timeout) / 2)
+    return wait_until(f"{N_RETWEET} > 0", timeout=half, interval=0.5) or wait_until(
+        f"{N_UNRETWEET} > 0", timeout=half, interval=0.5
+    )
+
+
+def wait_quote_closed(timeout=12.0, interval=0.5):
+    """El editor de cita se cierra tanto al publicar como al cerrarlo a mano."""
+    attempts = max(1, int(float(timeout) / max(0.05, float(interval))))
+    for _ in range(attempts):
+        if not js(HAS_QUOTE_COMPOSER):
+            return True
+        time.sleep(interval)
+    return False
+
+
+def wait_quote_enabled(timeout=8.0, interval=0.5):
+    """El botón «Publicar» se habilita cuando el texto es válido."""
+    attempts = max(1, int(float(timeout) / max(0.05, float(interval))))
+    for _ in range(attempts):
+        if not js(QUOTE_POST_DISABLED):
+            return True
+        time.sleep(interval)
+    return False
+
+
 def collect(user, d_from, d_to):
-    global SKIPPED_RT, SKIPPED_KW
+    global SKIPPED_RT, SKIPPED_KW, SEARCH_TRUNCATED, SEARCH_TOTAL
     q = f"from:{user} since:{d_from} until:{next_day(d_to)}"
     url = "https://x.com/search?q=" + quote(q) + "&f=live"
     print(f"\n[{user}] buscando {fmt_fecha(d_from)} .. {fmt_fecha(d_to)}")
@@ -631,9 +706,10 @@ def collect(user, d_from, d_to):
         return []
 
     seen, out = set(), []
+    truncated = False
     for _ in range(8):
         if FATAL_BLOCK:
-            return out
+            break
         for r in (js(COLLECT_JS) or []):
             url = r.get("url") or ""
             if not url or url in seen:
@@ -659,18 +735,25 @@ def collect(user, d_from, d_to):
             r["search_user"] = user
             out.append(r)
         if len(out) >= 40:
+            truncated = True
             break
         js("window.scrollBy(0, 1600)")
         time.sleep(1.8)
+    SEARCH_TOTAL += len(seen)
+    if truncated:
+        SEARCH_TRUNCATED += 1
+        print("  aviso: tope de búsqueda alcanzado (40); puede haber más publicaciones")
     return out
 
 
-def repost(url):
+def repost(url, entry=None):
     if QUOTE_TEXT:
-        return quote_repost(url, QUOTE_TEXT)
+        return quote_repost(url, QUOTE_TEXT, entry=entry)
     goto_url(url)
     wait_for_load()
-    time.sleep(1.5)
+    if not wait_post_ready(10):
+        problem = page_guard()
+        return problem or "no_button"
     problem = page_guard()
     if problem:
         return problem
@@ -679,13 +762,11 @@ def repost(url):
     if js(N_RETWEET) == 0:
         return "no_button"
     js(FIRST_RETWEET + ".click()")
-    time.sleep(1.3)
-    if not js(HAS_CONFIRM):
+    if not wait_until(HAS_CONFIRM, timeout=6):
         problem = page_guard()
         return problem or "no_menu"
     js("document.querySelector('[data-testid=\"retweetConfirm\"]').click()")
-    time.sleep(2.5)
-    if js(N_UNRETWEET) > 0:
+    if wait_until(f"{N_UNRETWEET} > 0", timeout=12):
         return "reposted"
     # Sin el estado «unretweet» no hay confirmación real: puede ser un fallo de
     # X o que la acción no se aplicó. Nunca se marca como éxito.
@@ -705,12 +786,25 @@ def bring_tab_front():
         pass
 
 
-def quote_repost(url, text):
-    """Repost con cita: abre «Quote», escribe el comentario y publica."""
+def quote_repost(url, text, entry=None):
+    """Repost con cita: abre «Quote», escribe el comentario y publica.
+
+    Deja rastro explícito del avance en el historial: ``quote_pending`` antes de
+    abrir el editor y ``quote_submitted`` justo después de pulsar «Publicar».
+    Si el proceso muere entre medias, el último evento es incierto y la
+    siguiente ejecución omite la publicación en lugar de duplicarla.
+    """
+
+    def stage(result):
+        if entry:
+            save_event("repost", result, post=entry)
+
     bring_tab_front()
     goto_url(url)
     wait_for_load()
-    time.sleep(1.5)
+    if not wait_post_ready(10):
+        problem = page_guard()
+        return problem or "no_button"
     problem = page_guard()
     if problem:
         return problem
@@ -719,48 +813,33 @@ def quote_repost(url, text):
     if js(N_RETWEET) == 0 and js(N_UNRETWEET) == 0:
         return "no_button"
     js(button + ".click()")
-    time.sleep(1.3)
-    if not js(HAS_QUOTE_MENU):
+    if not wait_until(HAS_QUOTE_MENU, timeout=6):
         problem = page_guard()
         return problem or "no_quote_option"
+    stage("quote_pending")
     js(QUOTE_MENU + ".click()")
 
-    for _ in range(15):
-        if js(HAS_QUOTE_COMPOSER):
-            break
-        time.sleep(1)
-    else:
+    if not wait_until(HAS_QUOTE_COMPOSER, timeout=15, interval=1):
         problem = page_guard()
         return problem or "no_composer"
 
     if not js(FOCUS_QUOTE_EDITOR):
         return "no_composer"
-    time.sleep(0.4)
     type_text(text)
-    time.sleep(0.8)
 
-    for _ in range(10):
-        if not js(QUOTE_POST_DISABLED):
-            break
-        time.sleep(0.5)
-    else:
+    if not wait_quote_enabled(timeout=8):
         return "quote_failed"
 
     if not js(CLICK_QUOTE_POST):
         return "quote_failed"
-    for _ in range(24):
-        time.sleep(0.5)
-        if not js(HAS_QUOTE_COMPOSER):
-            break
-    else:
+    stage("quote_submitted")
+    if not wait_quote_closed(timeout=12):
         return "quote_failed"
     # El editor puede cerrarse sin publicar (navegación, error de X): solo el
     # toast con enlace al post nuevo confirma la cita. Sin él no se marca como
     # hecha, porque una cita falsa en el historial bloquea el reintento.
-    for _ in range(10):
-        if js(HAS_POST_TOAST):
-            return "quoted"
-        time.sleep(0.5)
+    if wait_until(HAS_POST_TOAST, timeout=8, interval=0.5):
+        return "quoted"
     problem = page_guard()
     return problem or "quote_unverified"
 
@@ -1110,6 +1189,11 @@ def main():
         return 0
 
     print(f"\n{len(found)} posts encontrados:\n")
+    if SEARCH_TRUNCATED:
+        print(
+            f"aviso: {SEARCH_TRUNCATED} cuenta(s) alcanzaron el tope de 40 resultados; "
+            "la lista puede estar incompleta. Ajusta fechas o pide una búsqueda más concreta.\n"
+        )
     for i, p in enumerate(found, 1):
         print(f"{i:3}. {fmt_fecha(p['time'])} | {p['user']}")
         print(f"     {p['text'][:150].replace(chr(10), ' ')}")
@@ -1119,7 +1203,11 @@ def main():
     do_export(found, default_status="solo listado" if not APPLY else "pendiente")
 
     if not APPLY:
-        print("\nDRY-RUN: no se ha reposteado nada. Usa X_APPLY=1 para ejecutar.")
+        print(
+            f"\nResumen de la búsqueda: {SEARCH_TOTAL} vistas, {len(found)} disponibles, "
+            f"{SKIPPED_RT} retweets omitidos, {SKIPPED_KW} descartados por filtros."
+        )
+        print("DRY-RUN: no se ha reposteado nada. Usa X_APPLY=1 para ejecutar.")
         return 0
 
     if QUOTE_TEXT:
@@ -1135,7 +1223,7 @@ def main():
         if FATAL_BLOCK:
             print(f"tanda detenida por un bloqueo de X ({label(FATAL_BLOCK)})")
             break
-        res = repost(p["url"])
+        res = repost(p["url"], entry=p)
         statuses[p["url"]] = res
         print(f"  {label(res)}: {p['url']}")
         save_event("repost", res, post=p)

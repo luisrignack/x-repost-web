@@ -19,6 +19,8 @@ LABELS = {
     "no_quote_option": "el menú no ofrecía «Citar»",
     "no_composer": "no se abrió el editor de la cita",
     "quote_failed": "no se pudo publicar la cita",
+    "quote_pending": "preparando la cita (sin publicar todavía)",
+    "quote_submitted": "cita enviada; falta confirmar el enlace del post",
     "quote_unverified": "cita sin confirmar (revisa tu perfil)",
     "unconfirmed": "no se pudo confirmar (revisa tu perfil)",
     "undone": "deshecho",
@@ -41,7 +43,12 @@ LABELS = {
 }
 
 # Estados que no se reintentan automáticamente en otra ejecución.
-UNCERTAIN_RESULTS = ("unconfirmed", "quote_unverified")
+UNCERTAIN_RESULTS = (
+    "unconfirmed",
+    "quote_unverified",
+    "quote_pending",
+    "quote_submitted",
+)
 
 # Estados que obligan a detener toda la tanda.
 FATAL_RESULTS = ("session_expired", "captcha", "rate_limited", "suspended")

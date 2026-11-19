@@ -30,7 +30,12 @@ import xrepost_fs
 ACTIONS = ("repost", "undo")
 SUCCESS_RESULTS = ("reposted", "quoted")
 UNDO_RESULTS = ("undone", "not_reposted")
-UNKNOWN_RESULTS = ("unconfirmed", "quote_unverified")
+UNKNOWN_RESULTS = (
+    "unconfirmed",
+    "quote_unverified",
+    "quote_pending",
+    "quote_submitted",
+)
 ARCHIVE_PREFIX = "history-archivo-"
 DEFAULT_MAX_BYTES = 32 * 1024 * 1024
 

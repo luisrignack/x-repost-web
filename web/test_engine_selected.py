@@ -371,8 +371,11 @@ class EngineSelectedTest(unittest.TestCase):
             for line in self.history.read_text("utf-8").splitlines()
             if line.strip()
         ]
-        self.assertEqual([e["result"] for e in events], ["quoted"])
-        self.assertEqual(events[0]["quote"], "#ETECSA")
+        self.assertEqual(
+            [e["result"] for e in events],
+            ["quote_pending", "quote_submitted", "quoted"],
+        )
+        self.assertEqual(events[-1]["quote"], "#ETECSA")
         self.assertIn("TYPE #ETECSA", self.log.read_text("utf-8"))
 
     def test_quote_without_toast_is_not_marked_done(self):
@@ -386,7 +389,10 @@ class EngineSelectedTest(unittest.TestCase):
             for line in self.history.read_text("utf-8").splitlines()
             if line.strip()
         ]
-        self.assertEqual([e["result"] for e in events], ["quote_unverified"])
+        self.assertEqual(
+            [e["result"] for e in events],
+            ["quote_pending", "quote_submitted", "quote_unverified"],
+        )
         self.assertIn("cita sin confirmar", result.stdout)
 
         # Un segundo intento NO vuelve a visitar el post: quedó sin confirmar y
@@ -492,6 +498,72 @@ class EngineSelectedTest(unittest.TestCase):
         self.assertEqual(visited, [POSTS[1]["url"]])
         self.assertEqual(self.history_results("undo"), ["undone"])
 
+    def test_quote_fallida_tras_preparar_se_puede_reintentar(self):
+        """``quote_pending`` + ``quote_failed`` es un fallo conocido, no incierto."""
+        self.selected.write_text(json.dumps(POSTS[:1], ensure_ascii=False), encoding="utf-8")
+        result = self.run_engine(
+            extra_env={"X_QUOTE": "#ETECSA", "FAKE_DISABLED": "1"}
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            self.history_results("repost"), ["quote_pending", "quote_failed"]
+        )
+        self.log.write_text("", encoding="utf-8")
+        result = self.run_engine(extra_env={"X_QUOTE": "#ETECSA"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        visited = [
+            line[5:]
+            for line in self.log.read_text("utf-8").splitlines()
+            if line.startswith("GOTO ")
+        ]
+        self.assertEqual(visited, [POSTS[0]["url"]])
+
+    def test_estado_de_cita_solo_mira_el_ultimo_evento(self):
+        """Un envío sin confirmar bloquea; un fallo posterior permite reintentar."""
+        self.selected.write_text(json.dumps(POSTS[:1], ensure_ascii=False), encoding="utf-8")
+        base = {
+            "ts": "2024-01-01T10:00:00+00:00",
+            "action": "repost",
+            "id": "11",
+            "url": POSTS[0]["url"],
+            "quote": "#ETECSA",
+        }
+        self.history.write_text(
+            "\n".join(
+                json.dumps({**base, "result": result})
+                for result in ("quote_pending", "quote_submitted")
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        result = self.run_engine(extra_env={"X_QUOTE": "#ETECSA"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        visitadas = (
+            [
+                line[5:]
+                for line in self.log.read_text("utf-8").splitlines()
+                if line.startswith("GOTO ")
+            ]
+            if self.log.exists()
+            else []
+        )
+        self.assertEqual(visitadas, [])
+
+        # Un ``quote_failed`` posterior convierte el último intento en un fallo
+        # conocido: el reintento automático sí procede.
+        with self.history.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({**base, "result": "quote_failed"}) + "\n")
+        result = self.run_engine(extra_env={"X_QUOTE": "#ETECSA"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            [
+                line[5:]
+                for line in self.log.read_text("utf-8").splitlines()
+                if line.startswith("GOTO ")
+            ],
+            [POSTS[0]["url"]],
+        )
+
     def test_quote_sin_opcion_de_cita(self):
         self.selected.write_text(json.dumps(POSTS[:1], ensure_ascii=False), encoding="utf-8")
         result = self.run_engine(
@@ -506,7 +578,9 @@ class EngineSelectedTest(unittest.TestCase):
             extra_env={"X_QUOTE": "#ETECSA", "FAKE_NO_COMPOSER": "1"}
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.history_results("repost"), ["no_composer"])
+        self.assertEqual(
+            self.history_results("repost"), ["quote_pending", "no_composer"]
+        )
 
     def test_quote_boton_deshabilitado(self):
         self.selected.write_text(json.dumps(POSTS[:1], ensure_ascii=False), encoding="utf-8")
@@ -514,7 +588,9 @@ class EngineSelectedTest(unittest.TestCase):
             extra_env={"X_QUOTE": "#ETECSA", "FAKE_DISABLED": "1"}
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.history_results("repost"), ["quote_failed"])
+        self.assertEqual(
+            self.history_results("repost"), ["quote_pending", "quote_failed"]
+        )
 
 
 if __name__ == "__main__":
