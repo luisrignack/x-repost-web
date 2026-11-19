@@ -5,28 +5,28 @@
 | Métrica | Valor |
 | --- | --- |
 | Marco | `unittest` ejecutado con `pytest` |
-| Pruebas recopiladas | **180** |
+| Pruebas recopiladas | **192** |
 | Subpruebas | **32** |
-| Resultado local | **180 passed, 32 subtests passed** |
+| Resultado local | **192 passed, 32 subtests passed** |
 | Cobertura (módulos de negocio) | **91 %** |
 | Cobertura total (incluye CLI y panel) | **86 %** |
 | Python | 3.14.4 |
-| Duración aproximada | 42 s |
+| Duración aproximada | 50 s |
 | Navegador necesario | No |
 | Credenciales necesarias | No |
 
 ```bash
 python3 -m pytest -q
-# 180 passed, 32 subtests passed
+# 192 passed, 32 subtests passed
 ```
 
 ## 2. Distribución
 
 | Archivo | Pruebas | Ámbito |
 | --- | --- | --- |
-| `tests/test_core_modules.py` | 62 | Sistema de archivos, almacén JSON, seguridad, CDP, filtros, trabajos, exportaciones, grupos, bandeja, programación, estadísticas, historial y máquina de estados. |
-| `web/test_app.py` | 56 | Contrato HTTP del panel: auth, CSRF, trabajos, perfiles, grupos, bandeja, programación, estadísticas, backups, exportaciones y UI. |
-| `web/test_engine_selected.py` | 15 | Sondas y selectores del motor sin abrir Chrome. |
+| `tests/test_core_modules.py` | 63 | Sistema de archivos, almacén JSON, seguridad, CDP, filtros, trabajos, exportaciones, grupos, bandeja, programación, estadísticas, historial y máquina de estados. |
+| `web/test_app.py` | 65 | Contrato HTTP del panel: auth, CSRF, trabajos, concurrencia, encuadre HTTP, perfiles, grupos, bandeja, programación, estadísticas, backups, exportaciones y UI. |
+| `web/test_engine_selected.py` | 17 | Sondas, selectores y estados de cita del motor sin abrir Chrome. |
 | `tests/test_history.py` | 12 | Estado compartido del historial. |
 | `tests/test_network.py` | 15 | Preferencias de red y flags de Chrome. |
 | `tests/test_hashtags.py` | 8 | Normalización y sugerencias de hashtags. |
@@ -113,17 +113,17 @@ python -m coverage report \
 | `xrepost_state.py` | 94 % |
 | `xrepost_store.py` | 90 % |
 | `xrepost_exports.py` | 89 % |
-| `xrepost_jobs.py` | 89 % |
-| `xrepost_inbox.py` | 88 % |
-| `xrepost_cdp.py` | 89 % |
+| `xrepost_jobs.py` | 90 % |
+| `xrepost_inbox.py` | 90 % |
+| `xrepost_cdp.py` | 86 % |
 | `xrepost_fs.py` | 83 % |
-| `xrepost_stats.py` | 82 % |
+| `xrepost_stats.py` | 84 % |
 | **Total de negocio** | **91 %** |
 | **Total del proyecto** | **86 %** |
 
 CI exige `--fail-under=90` para ese conjunto. La cobertura total es menor por
 `xrepost_accounts.py` (CLI interactivo) y `web/app.py`; sus caminos críticos
-están cubiertos por `web/test_app.py` (56 pruebas).
+están cubiertos por `web/test_app.py` (65 pruebas).
 
 ## 6. Instalación de las herramientas de calidad
 

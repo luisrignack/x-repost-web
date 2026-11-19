@@ -11,7 +11,7 @@ token permanente en la URL a una aplicación con sesión, CSRF, validación de
 CDP, escritura atómica, máquina de estados por publicación y por trabajo,
 verificación real de cada acción y recuperación conservadora tras un reinicio.
 
-La suite creció de 96 a **180 pruebas + 32 subpruebas**. La cobertura de los
+La suite creció de 96 a **192 pruebas + 32 subpruebas**. La cobertura de los
 módulos de negocio es **91 %** (total del proyecto: 86 %). El CI ejecuta Ruff,
 ShellCheck, Bandit, pip-audit, Gitleaks, cobertura, SBOM y empaquetado.
 
@@ -46,6 +46,9 @@ evidencia y prueba necesaria están en
   `hmac.compare_digest`, guardado en archivo `0600` y nunca escrito en logs.
 - CSRF por sesión (`X-CSRF-Token`), validación exacta de `Host`/`Origin`,
   `Sec-Fetch-Site`, `Content-Type` y límite de cuerpo.
+- Encuadre HTTP estricto: se rechazan `Content-Length` negativo, no numérico,
+  duplicado con valores distintos y `Transfer-Encoding`; el cuerpo declarado
+  debe llegar completo y cada conexión tiene un timeout de 30 s.
 - Bloqueo progresivo por IP tras fallos de autenticación.
 - CSP estricta, `X-Content-Type-Options`, `Referrer-Policy`, `no-store`,
   `X-Frame-Options: DENY`, COOP/CORP.
@@ -64,9 +67,17 @@ evidencia y prueba necesaria están en
   corrupción.
 - `xrepost_jobs.py`: registro persistente, estados `CREATED`…`INTERRUPTED`,
   **transiciones validadas**, recuperación conservadora y poda.
+- Reserva atómica de la ejecución: `reserve_job()` comprueba y ocupa el turno
+  bajo el mismo bloqueo, antes de escribir ningún archivo; la selección de un
+  `apply` vive en `runs/<job>/selected.json` (exclusivo). Si preparar el
+  trabajo falla, `abort_job()` libera la reserva, borra el directorio y el
+  registro persistente.
 - `xrepost_state.py`: máquina de estados por publicación (`DISCOVERED`…
   `UNDONE`) integrada en la bandeja.
 - Resultados inciertos (`UNCERTAIN_RESULTS`) no se reintentan sin `--force`.
+- Cambio de red transaccional: se guarda la configuración anterior, se relanza
+  Chrome y se espera su CDP; si no vuelve, se restaura la preferencia y se
+  reintenta el lanzamiento antes de informar del fallo.
 - Backup de historial con SHA-256, verificación y restauración forzada.
 
 ### Funcionalidad
@@ -104,6 +115,9 @@ evidencia y prueba necesaria están en
 | V-05 | Las transiciones de estado de los trabajos no se validaban. | `JobStore.update` solo comprobaba que el estado existiera. | Tabla `TRANSITIONS`, `JobStateError`, `can_transition`/`require_transition` y pruebas de estados terminales. |
 | V-06 | Un undo confirmado no actualizaba la bandeja. | `_sync_inbox()` solo se invocaba para `preview`/`apply`, `xrepost_state` no estaba importado en `web/app.py` y `job.started` incluía `+00:00` frente a un `ts` normalizado a minutos. | Se sincroniza también en `undo`, se importa `xrepost_state` y se compara con el mismo formato; la prueba `test_undo_confirmado_actualiza_la_bandeja` la cubre. |
 | V-07 | `Sec-Fetch-Site` y el rechazo de escrituras con cookie sin `Origin` estaban documentados pero no implementados. | `_origin_ok()` devolvía `True` sin `Origin` y nadie miraba `Sec-Fetch-Site`. | `_require_local_provenance()` rechaza `cross-site` y exige `Origin` o `Sec-Fetch-Site` en escrituras con cookie; los clientes `X-Token` siguen exentos. |
+| V-08 | Condición de carrera en `_api_apply()`: la selección se escribía en `preview.dir/selected.json` **antes** de que `start_job()` tomara el bloqueo. | Dos `apply` simultáneos escribían el mismo archivo; el rechazado podía sobrescribir la selección del que sí arrancaba. | `reserve_job()`/`launch_job()`/`abort_job()` y `selected.json` en el directorio exclusivo del trabajo. Pruebas de dos y diez peticiones simultáneas. |
+| V-09 | Encuadre HTTP ambiguo: `Content-Length` negativo se trataba como 0 y no se rechazaban duplicados ni `Transfer-Encoding`. | Lectura directa de la cabecera sin validar. | `_content_length()` valida el encuadre, cierra la conexión ante ambigüedad y exige cuerpo completo; timeout de conexión de 30 s. Pruebas con socket crudo. |
+| V-10 | Cambiar la red podía dejar Chrome sin CDP y la preferencia nueva aplicada. | El reinicio no verificaba nada ni revertía. | `save_config()` guarda `.bak`; el reinicio espera CDP y restaura la configuración anterior si falla. |
 
 ## 5. Vulnerabilidades corregidas
 
@@ -116,6 +130,9 @@ evidencia y prueba necesaria están en
 | S-06 | CDP sin identidad verificada. | Loopback, puerto, proceso y perfil dedicados. | `xrepost_cdp.py`, 4 pruebas |
 | S-07 | `shell=True` y entorno completo. | Listas de argumentos y entorno mínimo. | `web/app.py` |
 | S-08/S-09 | Permisos laxos y symlinks. | `umask`, `0700/0600`, `O_NOFOLLOW`, `safe_join`. | `xrepost_fs.py` |
+| S-10 | Carrera entre dos `apply` simultáneos. | Reserva atómica antes de escribir; selección por trabajo y liberación ante error. | `web/app.py`, pruebas de concurrencia |
+| S-11 | Encuadre HTTP ambiguo (desincronización). | Validación de `Content-Length`/`Transfer-Encoding`, cuerpo completo y timeout. | `web/app.py`, pruebas con socket |
+| S-12 | Configuración de red sin reversión. | Backup `.bak`, espera de CDP y restauración automática. | `xrepost_network.py`, `xrepost_cdp.py` |
 | R-02 | Resultado incierto reintentado. | `UNCERTAIN_RESULTS` y estado `unconfirmed`. | `xrepost_labels.py`, bandeja |
 | R-03 | Éxito asumido tras el clic. | Verificación del DOM en repost, cita y undo. | `xrepost.py`, pruebas del motor |
 
@@ -174,7 +191,17 @@ real. Es una decisión consciente, no un olvido (ver sección 16).
 
 - Selectores centralizados en `xrepost_selectors.py` con alternativas y
   validación.
-- Esperas condicionadas con timeout; no hay bucles infinitos.
+- Esperas condicionadas con timeout; no hay bucles infinitos. El repost espera
+  el botón montado, el menú y el cambio a «quitar repost»; la cita espera el
+  editor, el botón habilitado, el cierre del editor y el toast con enlace.
+- Citas con estados explícitos en el historial: `quote_pending` (editor
+  abierto), `quote_submitted` (pulsado Publicar), `quoted` (confirmada por el
+  toast, se conserva el nombre histórico), `quote_unverified` y
+  `quote_failed`. Un `quote_pending`/`quote_submitted`
+  sin evento final bloquea el reintento automático hasta revisar el perfil.
+- La búsqueda informa cuando alcanza el tope de 40 resultados por cuenta y el
+  resumen del modo de prueba muestra vistas, disponibles, retweets omitidos y
+  descartes.
 - Detección de sesión expirada, captcha, restricciones y límites de X; la
   ejecución se detiene y pide intervención humana.
 - Verificación del DOM tras repost, cita y undo. Un clic sin evidencia queda
@@ -187,11 +214,17 @@ real. Es una decisión consciente, no un olvido (ver sección 16).
 ## 9. Pruebas incorporadas
 
 - 38 pruebas nuevas respecto a la línea base en `tests/test_core_modules.py`
-  (hoy 62 en ese archivo), más las ampliaciones de `web/test_app.py`.
+  (hoy 63 en ese archivo), más las ampliaciones de `web/test_app.py`.
 - Cobertura directa de: sistema de archivos seguro, almacén JSON, filtros,
   CDP, sesiones, fuerza bruta, CSRF, trabajos y transiciones, exportaciones,
   grupos, bandeja, programación, estadísticas, historial, backups y máquina de
   estados.
+- 12 pruebas nuevas de esta pasada: carrera de `apply` (2 y 10 peticiones),
+  liberación de reserva ante error de escritura, encuadre HTTP con socket
+  crudo, body excesivo, reintento tras cita fallida, estados intermedios de
+  cita y semántica del último evento, reversión de red, `JobStore.delete` y
+  tres pruebas de estrés (100 GET, 20 POST inválidos, 10 000 eventos y 200
+  cuentas).
 - Simulación del motor y de `browser-use` en `web/test_engine_selected.py`;
   ninguna prueba publica en X ni abre Chrome.
 - Prueba de arranque con un `browser-use` de doble para que el CI no dependa
@@ -201,7 +234,7 @@ real. Es una decisión consciente, no un olvido (ver sección 16).
 
 | Comprobación | Resultado |
 | --- | --- |
-| `pytest` | **180 passed, 32 subtests passed** (~42 s) |
+| `pytest` | **192 passed, 32 subtests passed** (~50 s) |
 | Python 3.12 (CI) | Misma suite, mismos resultados |
 | Python 3.10+ | Sintaxis compatible (se corrigió la f-string de `xrepost_exports.py`) |
 | Ruff (`E9,F63,F7,F82`) | Sin hallazgos (re-verificado 2026-11-18) |
@@ -224,12 +257,12 @@ Medida con `coverage 7.17.3 --branch` y Python 3.12/3.14:
 | `xrepost_history.py` | 95 % |
 | `xrepost_state.py` | 94 % |
 | `xrepost_store.py` | 90 % |
+| `xrepost_jobs.py` | 90 % |
+| `xrepost_inbox.py` | 90 % |
 | `xrepost_exports.py` | 89 % |
-| `xrepost_jobs.py` | 89 % |
-| `xrepost_inbox.py` | 88 % |
-| `xrepost_cdp.py` | 89 % |
+| `xrepost_cdp.py` | 86 % |
 | `xrepost_fs.py` | 83 % |
-| `xrepost_stats.py` | 82 % |
+| `xrepost_stats.py` | 84 % |
 | **Total de negocio** | **91 %** |
 | **Total del proyecto** | **86 %** |
 
@@ -295,7 +328,8 @@ requirements.txt requirements-dev.txt ruff.toml .github/dependabot.yml
 **Modificados**
 
 ```text
-xrepost.py xrepost_history.py xrepost_labels.py xrepost.sh iniciar.sh ci.sh
+xrepost.py xrepost_history.py xrepost_labels.py xrepost_network.py
+xrepost_cdp.py xrepost.sh iniciar.sh ci.sh
 sync_portable.sh .github/workflows/ci.yml .gitignore README.md
 web/app.py web/static/index.html web/static/app.js web/static/styles.css
 web/test_app.py web/test_engine_selected.py tests/test_start_script.py
@@ -407,7 +441,7 @@ ABRIR_LA_APLICACION.md
 | F-06 | UI de una vista | P2 | 8 pestañas, temas, ARIA | `web/test_app.py` UI | RESUELTO |
 | F-07 | Mensajes/éxito genéricos | P1 | Estados reales por publicación | Pruebas de snapshot | RESUELTO |
 | M-01 | Estado duplicado | P2 | `xrepost_history.py` compartido | Pruebas de historial | RESUELTO |
-| M-02 | Pocas pruebas | P1 | 180 pruebas + 32 subtests | Suite completa | RESUELTO |
+| M-02 | Pocas pruebas | P1 | 192 pruebas + 32 subtests | Suite completa | RESUELTO |
 | M-03 | CI débil | P3 | Ruff, ShellCheck, Bandit, pip-audit, Gitleaks, cobertura, SBOM | CI verde | RESUELTO |
 | M-04 | Portable desincronizada | P2 | Lista ampliada y `--check` | `ci.sh` | RESUELTO |
 | V-01 | Ruff F821 | P1 | Shim `_injected()` | Ruff local/CI | RESUELTO |

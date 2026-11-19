@@ -224,7 +224,7 @@ módulos.
 
 ### Resultado
 
-- **180 pruebas y 32 subpruebas**, todas aprobadas.
+- **192 pruebas y 32 subpruebas**, todas aprobadas.
 - `ci.sh` en verde.
 - Copia portable sincronizada (41 archivos).
 
@@ -322,13 +322,60 @@ La revisión posterior añadió:
 
 ## Cobertura y pruebas
 
-- 180 pruebas + 32 subpruebas.
+- 192 pruebas + 32 subpruebas.
 - 91 % en los módulos de negocio (umbral de CI: 90 %); 86 % total.
 - 38 pruebas nuevas para `fs`, `filters`, `cdp`, `schedule`, `security`,
   `groups`, `history` y `state`.
 - `bandit -ll`: 0 hallazgos medium/high (12 low de `try/except pass`
   justificados).
 - `gitleaks` sobre el árbol actual: sin fugas.
+
+## Fase final — carrera de `apply`, encuadre HTTP y citas
+
+**Archivos**: `web/app.py`, `xrepost_jobs.py`, `xrepost.py`,
+`xrepost_labels.py`, `xrepost_history.py`, `xrepost_network.py`,
+`xrepost_cdp.py`, `web/test_app.py`, `web/test_engine_selected.py`,
+`tests/test_core_modules.py`, documentación.
+
+**Motivo**:
+
+- Corregir la condición de carrera de `_api_apply()`: la selección se escribía
+  en el directorio de la previsualización antes de reservar el turno.
+- Cerrar ambigüedades de encuadre HTTP y limitar el tiempo de una conexión.
+- Hacer observable el avance de una cita y no reintentar un envío incierto.
+- Revertir automáticamente un cambio de red que deje a Chrome sin CDP.
+
+**Resultado**:
+
+- `App.reserve_job()` / `launch_job()` / `abort_job()`: reserva bajo el mismo
+  bloqueo que comprueba `running()`, directorio y `selected.json` exclusivos,
+  liberación y borrado del registro si la preparación falla.
+- `JobStore.delete()` para reservas abortadas.
+- `_content_length()`: rechaza `Content-Length` negativo, no numérico,
+  duplicado y `Transfer-Encoding`; exige el cuerpo completo; `timeout = 30` en
+  el handler.
+- Citas: eventos `quote_pending` y `quote_submitted`; `uncertain_ids()` mira
+  solo el último evento, de modo que un `quote_failed` sí se puede reintentar.
+- `wait_until`, `wait_post_ready`, `wait_quote_closed` y `wait_quote_enabled`
+  sustituyen pausas fijas por sondeos acotados.
+- La búsqueda avisa al alcanzar 40 resultados por cuenta y resume vistas,
+  disponibles, retuits omitidos y descartes.
+- Red: `save_config()` guarda `.bak`, `wait_available()` espera CDP y el panel
+  restaura la configuración anterior si el reinicio no vuelve.
+- Pruebas: dos y diez `apply` simultáneos (una sola escritura), reserva
+  liberada ante error, encuadre con socket crudo, cita fallida reintentable,
+  último evento de cita (un envío sin confirmar bloquea; un fallo posterior
+  permite reintentar), reversión de red, `JobStore.delete`, 100 GET
+  concurrentes, 20 POST inválidos, 10 000 eventos y 200 cuentas.
+
+**Verificación**:
+
+```text
+192 passed, 32 subtests passed
+ruff (E9,F63,F7,F82): sin hallazgos
+bandit -ll: 0 medium/high
+ci.sh: CI OK
+```
 
 ## Deuda pendiente
 
