@@ -332,6 +332,20 @@ def quick_available(url: str | None = None, timeout: float = 0.8) -> bool:
     return bool(probe(endpoint, timeout=timeout).get("ok"))
 
 
+def wait_available(
+    url: str | None = None, timeout: float = 20.0, interval: float = 0.5
+) -> bool:
+    """Espera acotada a que Chrome publique su endpoint CDP tras un reinicio."""
+    import time
+
+    attempts = max(1, int(float(timeout) / max(0.1, float(interval))))
+    for _ in range(attempts):
+        if quick_available(url):
+            return True
+        time.sleep(interval)
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 

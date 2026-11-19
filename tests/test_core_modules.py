@@ -252,6 +252,14 @@ class JobsTest(Base):
         with self.assertRaises(ValueError):
             store.update("b" * 32, state="inventado")
 
+    def test_delete_elimina_solo_el_registro_indicado(self):
+        store = xrepost_jobs.JobStore(self.root / "runs3")
+        store.create("e" * 32, "preview", {})
+        store.create("f" * 32, "apply", {})
+        self.assertTrue(store.delete("e" * 32))
+        self.assertFalse(store.delete("e" * 32))
+        self.assertEqual([item["id"] for item in store.list()], ["f" * 32])
+
     def test_transiciones_de_trabajo(self):
         store = xrepost_jobs.JobStore(self.root / "runs2")
         job = store.create("d" * 32, "preview", {})

@@ -8,6 +8,7 @@ import http.client
 import json
 import os
 import shlex
+import socket
 import stat
 import tempfile
 import textwrap
@@ -15,6 +16,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from app import App, Job, MAX_JOBS, create_server, main, read_history
 
@@ -594,6 +596,52 @@ class WebTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def _raw_post(self, headers: list[str], body: bytes = b"") -> bytes:
+        lines = [
+            "POST /api/preview HTTP/1.1",
+            f"Host: 127.0.0.1:{self.port}",
+            f"X-Token: {self.token}",
+            *headers,
+            "Connection: close",
+            "",
+            "",
+        ]
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sock:
+            sock.sendall("\r\n".join(lines).encode("ascii") + body)
+            chunks = []
+            while True:
+                data = sock.recv(4096)
+                if not data:
+                    break
+                chunks.append(data)
+        return b"".join(chunks)
+
+    def test_http_framing_rechaza_longitudes_ambiguas(self):
+        negative = self._raw_post(
+            ["Content-Type: application/json", "Content-Length: -5"]
+        )
+        self.assertIn(b" 400 ", negative.split(b"\r\n", 1)[0])
+        self.assertIn("Longitud no válida".encode(), negative)
+
+        duplicate = self._raw_post(
+            ["Content-Type: application/json", "Content-Length: 5", "Content-Length: 9"]
+        )
+        self.assertIn(b" 400 ", duplicate.split(b"\r\n", 1)[0])
+        self.assertIn("Content-Length ambiguo".encode(), duplicate)
+
+        chunked = self._raw_post(
+            ["Content-Type: application/json", "Transfer-Encoding: chunked"]
+        )
+        self.assertIn(b" 400 ", chunked.split(b"\r\n", 1)[0])
+        self.assertIn("Transfer-Encoding".encode(), chunked)
+
+    def test_http_body_demasiado_grande(self):
+        response = self._raw_post(
+            ["Content-Type: application/json", "Content-Length: 1000001"]
+        )
+        self.assertIn(b" 413 ", response.split(b"\r\n", 1)[0])
+        self.assertIn(b"Connection: close", response)
+
     def test_early_rejection_closes_connection(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
@@ -656,8 +704,11 @@ class WebTest(unittest.TestCase):
         self.assertNotIn("only_urls_file", job["params"])
         self.assertTrue((preview["posts"][0]["url"]).startswith("https://x.com/"))
 
-        selected = self.runs / preview["id"] / "selected.json"
+        # La selección vive en el directorio exclusivo del trabajo, no en el de
+        # la previsualización (donde otra petición podría sobrescribirla).
+        selected = self.runs / job["id"] / "selected.json"
         self.assertTrue(selected.exists())
+        self.assertFalse((self.runs / preview["id"] / "selected.json").exists())
         self.assertEqual(
             [item["url"] for item in json.loads(selected.read_text("utf-8"))],
             [p["url"] for p in preview["posts"]],
@@ -692,11 +743,12 @@ class WebTest(unittest.TestCase):
         self.assertEqual(job["status"], "done")
         self.assertEqual([p["url"] for p in job["posts"]], [chosen_url])
 
-        selected = self.runs / preview["id"] / "selected.json"
+        selected = self.runs / job["id"] / "selected.json"
         self.assertEqual(
             [item["url"] for item in json.loads(selected.read_text("utf-8"))],
             [chosen_url],
         )
+        self.assertFalse((self.runs / preview["id"] / "selected.json").exists())
         lines = [json.loads(line) for line in self.history.read_text("utf-8").splitlines()]
         self.assertEqual([e["url"] for e in lines], [chosen_url])
 
@@ -749,6 +801,84 @@ class WebTest(unittest.TestCase):
         self.assertTrue(all(p["estado"] == "reposteado" for p in job["posts"]))
 
     # --- una ejecución a la vez y cancelación --------------------------
+
+    def test_apply_concurrente_no_mezcla_la_seleccion(self):
+        """Dos apply simultáneos: uno reserva, el otro es rechazado sin escribir.
+
+        Es la regresión del P0: antes se escribía ``selected.json`` en el
+        directorio de la previsualización *antes* de reservar el turno, así que
+        la petición rechazada podía sobrescribir la selección de la aceptada.
+        """
+        preview = self.preview()
+        urls = sorted(p["url"] for p in preview["posts"])
+        self.assertEqual(len(urls), 2)
+        self.assertFalse((self.runs / preview["id"] / "selected.json").exists())
+        original = __import__("xrepost_fs").write_json
+        writes: list[str] = []
+
+        def slow_write(path, data, **kwargs):
+            if Path(path).name == "selected.json":
+                writes.append(str(path))
+                time.sleep(0.4)
+            return original(path, data, **kwargs)
+
+        barrier = threading.Barrier(2)
+        results: dict[str, tuple[int, dict | None]] = {}
+
+        def submit(name: str, url: str) -> None:
+            body = self.params(confirm=True)
+            body.update({"preview_id": preview["id"], "selected_urls": [url]})
+            barrier.wait(timeout=5)
+            status, _, data = self.json_request("POST", "/api/apply", body)
+            results[name] = (status, data)
+
+        with mock.patch("xrepost_fs.write_json", side_effect=slow_write):
+            threads = [
+                threading.Thread(target=submit, args=("a", urls[0])),
+                threading.Thread(target=submit, args=("b", urls[1])),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=15)
+
+        statuses = sorted(status for status, _ in results.values())
+        self.assertEqual(statuses, [202, 409], results)
+        self.assertEqual(len(writes), 1, writes)
+        winner = next(name for name, (status, _) in results.items() if status == 202)
+        loser = "b" if winner == "a" else "a"
+        self.assertIn("en curso", results[loser][1]["error"])
+
+        job = self.wait_job(results[winner][1]["id"])
+        self.assertEqual(job["status"], "done")
+        selection = json.loads(
+            (self.runs / job["id"] / "selected.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual([row["url"] for row in selection], [urls[0] if winner == "a" else urls[1]])
+        # La selección aceptada no vive en el directorio de la previsualización.
+        self.assertFalse((self.runs / preview["id"] / "selected.json").exists())
+
+    def test_apply_libera_la_reserva_si_no_puede_escribir(self):
+        """Un fallo al preparar la selección no deja el panel bloqueado."""
+        preview = self.preview()
+        body = self.params(confirm=True)
+        body["preview_id"] = preview["id"]
+        original = __import__("xrepost_fs").write_json
+
+        def disk_full(path, data, **kwargs):
+            if Path(path).name == "selected.json":
+                raise OSError("disco lleno")
+            return original(path, data, **kwargs)
+
+        with mock.patch("xrepost_fs.write_json", side_effect=disk_full):
+            status, _, data = self.json_request("POST", "/api/apply", body)
+        self.assertEqual(status, 500, data)
+        self.assertIsNone(self.app.current)
+        self.assertEqual(list(self.app.jobs), [preview["id"]])
+        self.assertEqual([item["id"] for item in self.app.job_store.list()], [preview["id"]])
+        self.assertEqual(list(self.runs.glob("*/selected.json")), [])
+        # La reserva se liberó: el panel sigue aceptando trabajos.
+        self.assertEqual(self.preview()["status"], "done")
 
     def test_only_one_job_and_cancel(self):
         self.set_env("STUB_SLEEP", "3")
@@ -894,15 +1024,49 @@ class WebTest(unittest.TestCase):
         original = app_module.CHROME_LAUNCHER
         app_module.CHROME_LAUNCHER = stub
         try:
-            status, _, body = self.json_request(
-                "POST", "/api/network/restart", {}
-            )
+            with mock.patch("xrepost_cdp.wait_available", return_value=True):
+                status, _, body = self.json_request(
+                    "POST", "/api/network/restart", {}
+                )
         finally:
             app_module.CHROME_LAUNCHER = original
 
         self.assertEqual(status, 200, body)
         self.assertTrue(body["success"])
+        self.assertTrue(body["cdp"])
         self.assertEqual(marker.read_text(encoding="utf-8").strip(), "--force")
+
+    def test_network_restart_revierte_si_cdp_no_vuelve(self):
+        import app as app_module
+
+        log = self.root / "restart-calls.log"
+        stub = self.root / "fake-chrome-log.sh"
+        stub.write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> "
+            + shlex.quote(str(log))
+            + "\n",
+            encoding="utf-8",
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        # Primero se crea una configuración válida para que exista una anterior.
+        self.assertEqual(self.json_request("POST", "/api/network", {"mode": "direct"})[0], 200)
+        self.assertEqual(self.json_request("POST", "/api/network", {"mode": "pac"})[0], 200)
+
+        original = app_module.CHROME_LAUNCHER
+        app_module.CHROME_LAUNCHER = stub
+        try:
+            with mock.patch("xrepost_cdp.wait_available", return_value=False):
+                status, _, body = self.json_request("POST", "/api/network/restart", {})
+        finally:
+            app_module.CHROME_LAUNCHER = original
+
+        self.assertEqual(status, 502, body)
+        self.assertIn("CDP", body["error"])
+        # La preferencia volvió a la anterior y Chrome se relanzó dos veces.
+        status, _, net = self.json_request("GET", "/api/network")
+        self.assertEqual(status, 200)
+        self.assertEqual(net["mode"], "direct")
+        self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 2)
 
     def test_network_restart_bloqueado_con_job_en_curso(self):
         import app as app_module
@@ -1404,6 +1568,103 @@ class WebTest(unittest.TestCase):
         self.assertEqual(status, 200, diag)
         self.assertIn("total_events", diag)
         self.assertIn("corrupt_events", diag)
+
+    # --- estrés y concurrencia ------------------------------------------
+
+    def test_stress_lecturas_y_escrituras_concurrentes(self):
+        errors: list[BaseException] = []
+        barrier = threading.Barrier(10)
+
+        def lector() -> None:
+            try:
+                barrier.wait(timeout=5)
+                for _ in range(10):
+                    status, _, data = self.json_request("GET", "/api/health")
+                    if status != 200 or not data.get("ok"):
+                        raise AssertionError(f"health inesperado: {status} {data}")
+            except BaseException as exc:  # se propaga al hilo principal
+                errors.append(exc)
+
+        threads = [threading.Thread(target=lector) for _ in range(10)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=15)
+        self.assertEqual(errors, [])
+
+        # 20 escrituras mal formadas: todas se rechazan sin alterar el panel.
+        for _ in range(20):
+            status, _, _ = self.json_request(
+                "POST", "/api/preview", {"users": "x" * 40, "from": "2024-01-01"}
+            )
+            self.assertEqual(status, 400)
+        self.assertFalse(self.app.running())
+
+    def test_stress_diez_ejecuciones_simultaneas_solo_una_gana(self):
+        preview = self.preview()
+        self.set_env("STUB_SLEEP", "1.5")
+        barrier = threading.Barrier(10)
+        statuses: list[int] = []
+        accepted: list[str] = []
+        lock = threading.Lock()
+
+        def solicitar() -> None:
+            body = self.params(confirm=True)
+            body["preview_id"] = preview["id"]
+            barrier.wait(timeout=5)
+            status, _, data = self.json_request("POST", "/api/apply", body)
+            with lock:
+                statuses.append(status)
+                if status == 202:
+                    accepted.append(data["id"])
+
+        threads = [threading.Thread(target=solicitar) for _ in range(10)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+
+        self.assertEqual(len(statuses), 10)
+        self.assertEqual(statuses.count(202), 1, statuses)
+        self.assertEqual(statuses.count(409), 9, statuses)
+        self.json_request("POST", "/api/cancel", {})
+        self.assertIn(self.wait_job(accepted[0])["status"], ("cancelled", "done"))
+
+    def test_stress_historial_de_diez_mil_eventos(self):
+        eventos = []
+        for i in range(10_000):
+            eventos.append(
+                {
+                    "ts": f"2024-01-{1 + i % 28:02d}T10:00:00Z",
+                    "action": "repost",
+                    "result": "reposted",
+                    "id": str(10_000 + i),
+                    "url": f"https://x.com/foo/status/{10_000 + i}",
+                }
+            )
+        self.history.write_text(
+            "\n".join(json.dumps(e, ensure_ascii=False) for e in eventos) + "\n",
+            encoding="utf-8",
+        )
+        status, _, data = self.json_request("GET", "/api/history?n=5")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["entries"]), 5)
+        status, _, diag = self.json_request("GET", "/api/history/diagnostic")
+        self.assertEqual(status, 200)
+        self.assertEqual(diag["total_events"], 10_000)
+        status, _, stats = self.json_request("GET", "/api/stats?days=365")
+        self.assertEqual(status, 200)
+        self.assertEqual(stats["total_events"], 10_000)
+        self.assertEqual(stats["reposts_confirmed"], 10_000)
+
+    def test_stress_doscientas_cuentas_sugeridas(self):
+        import xrepost_accounts
+
+        handles = ",".join(f"usuario{i:03d}" for i in range(200))
+        xrepost_accounts.add_accounts(handles, self.app.accounts)
+        status, _, data = self.json_request("GET", "/api/accounts?limit=20")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["accounts"]), 20)
 
 
 if __name__ == "__main__":

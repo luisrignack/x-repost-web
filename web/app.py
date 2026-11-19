@@ -583,7 +583,15 @@ class App:
         with self.lock:
             return bool(self.current is not None and self.current.status == "running")
 
-    def start_job(self, kind: str, params: dict) -> Job:
+    def reserve_job(self, kind: str, params: dict) -> Job:
+        """Reserva el único turno de ejecución antes de escribir nada.
+
+        La comprobación y la reserva ocurren bajo el mismo bloqueo, así que dos
+        peticiones concurrentes no pueden preparar archivos a la vez: la segunda
+        recibe 409 sin haber tocado el disco. Cada reserva tiene su propio
+        ``id`` y su propio directorio, de modo que una selección nunca puede
+        caer en los archivos de otra ejecución.
+        """
         with self.lock:
             if self.running():
                 raise HttpError(409, "Ya hay una ejecución en curso. Espera o cancélala.")
@@ -591,10 +599,34 @@ class App:
             job = Job(kind, params, self.runs)
             self.jobs[job.id] = job
             self.current = job
-        self.job_store.create(job.id, kind, params)
-        self._prune_jobs()
-        threading.Thread(target=self._run_job, args=(job,), daemon=True).start()
         return job
+
+    def launch_job(self, job: Job) -> Job:
+        """Registra y arranca un trabajo ya reservado."""
+        try:
+            self.job_store.create(job.id, job.kind, job.params)
+            self._prune_jobs()
+            threading.Thread(target=self._run_job, args=(job,), daemon=True).start()
+        except Exception:
+            # Nunca dejar una reserva a medias bloqueando el panel.
+            self.abort_job(job)
+            raise
+        return job
+
+    def abort_job(self, job: Job) -> None:
+        """Libera una reserva que no llegó a arrancar y borra sus archivos."""
+        with self.lock:
+            if self.current is job:
+                self.current = None
+            self.jobs.pop(job.id, None)
+            self._remove_run_dir(job.dir)
+        try:
+            self.job_store.delete(job.id)
+        except (OSError, ValueError):  # pragma: no cover - salvaguarda
+            pass
+
+    def start_job(self, kind: str, params: dict) -> Job:
+        return self.launch_job(self.reserve_job(kind, params))
 
     @staticmethod
     def _validate_cdp_endpoint() -> None:
@@ -963,9 +995,10 @@ class App:
         """Conserva los últimos MAX_JOBS trabajos (memoria y disco).
 
         Nunca toca el trabajo en curso ni la previsualización en la que se
-        apoya un ``apply`` en marcha (su ``selected.json`` vive en ese
-        directorio). Los directorios huérfanos de sesiones anteriores se
-        recortan por fecha de modificación.
+        apoya un ``apply`` en marcha (el panel la conserva para mostrar el
+        listado). La selección de un ``apply`` vive en su propio directorio y
+        no depende de la previsualización. Los directorios huérfanos de
+        sesiones anteriores se recortan por fecha de modificación.
         """
         with self.lock:
             ordered = sorted(self.jobs.values(), key=lambda j: j.started, reverse=True)
@@ -1104,6 +1137,8 @@ class App:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "xrepost-web/2.0"
+    # Un cliente lento no puede retener un hilo indefinidamente.
+    timeout = 30
     application: App
 
     # --- registro ----------------------------------------------------------
@@ -1262,23 +1297,43 @@ a{{color:#38BDF8}}</style>
 <main><h1>{title}</h1><p>{detail}</p><p style="margin-top:16px"><a href="/">Volver al panel</a></p></main></html>"""
         self._send_bytes(body.encode("utf-8"), "text/html; charset=utf-8", status)
 
-    def _read_json(self) -> dict:
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
+    def _content_length(self) -> int:
+        """Longitud del cuerpo validada; rechaza ambigüedades de framing.
+
+        Un ``Content-Length`` negativo, no numérico, duplicado con valores
+        distintos o combinado con ``Transfer-Encoding`` deja la conexión en un
+        estado ambiguo (riesgo de desincronización): se rechaza y se cierra.
+        """
+        if (self.headers.get("Transfer-Encoding") or "").strip():
+            self.close_connection = True
+            raise HttpError(400, "Transfer-Encoding no soportado.")
+        valores = self.headers.get_all("Content-Length") or []
+        if len({valor.strip() for valor in valores}) > 1:
+            self.close_connection = True
+            raise HttpError(400, "Content-Length ambiguo.")
+        raw = (valores[0] if valores else "").strip()
+        if not raw:
+            return 0
+        if not raw.isascii() or not raw.isdigit():
             self.close_connection = True
             raise HttpError(400, "Longitud no válida.")
-        length = max(0, length)
+        return int(raw)
+
+    def _read_json(self) -> dict:
+        length = self._content_length()
         if "application/json" not in (self.headers.get("Content-Type") or "").lower():
             self._drain_body(length)
             raise HttpError(415, "Se esperaba application/json.")
         if length == 0:
             return {}
         if length > MAX_BODY:
-            self._drain_body(MAX_BODY)
+            # El resto del cuerpo no se lee: la conexión no puede reutilizarse.
             self.close_connection = True
             raise HttpError(413, "Petición demasiado grande.")
         raw = self.rfile.read(length)
+        if len(raw) != length:
+            self.close_connection = True
+            raise HttpError(400, "Petición incompleta.")
         try:
             data = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
@@ -1860,6 +1915,8 @@ a{{color:#38BDF8}}</style>
 
     # --- endpoints concretos ------------------------------------------------
     def _api_network_set(self, data: dict) -> None:
+        if self.application.running():
+            raise HttpError(409, "Hay una ejecución en curso. Espera antes de cambiar de red.")
         try:
             cfg = xrepost_network.save_config(data)
         except ValueError as exc:
@@ -1870,8 +1927,30 @@ a{{color:#38BDF8}}</style>
     def _api_network_restart(self) -> None:
         if self.application.running():
             raise HttpError(409, "Hay una ejecución en curso. Espera antes de cambiar de red.")
+        # Cambio transaccional: si Chrome no vuelve a publicar CDP con la nueva
+        # configuración, se restaura la anterior y se reintenta una vez.
+        previous = xrepost_network.load_backup()
         restart_chrome()
-        self._send_json({"success": True, **network_status()})
+        if xrepost_cdp.wait_available(timeout=20):
+            self._send_json({"success": True, "cdp": True, **network_status()})
+            return
+        restored = False
+        if previous is not None:
+            try:
+                xrepost_network.save_config(previous, backup=False)
+                restart_chrome()
+                restored = xrepost_cdp.wait_available(timeout=20)
+            except (OSError, ValueError, HttpError) as exc:  # pragma: no cover - salvaguarda
+                print(f"[xrepost-web] reversión de red falló: {exc}", file=sys.stderr)
+        suffix = (
+            " Se restauró la configuración anterior."
+            if restored
+            else " Revisa la configuración y reinicia Chrome a mano."
+        )
+        raise HttpError(
+            502,
+            "Chrome no respondió por CDP después de aplicar la configuración de red." + suffix,
+        )
 
     def _api_preview(self, data: dict) -> None:
         params = validate_repost_params(data, apply=False)
@@ -1909,12 +1988,20 @@ a{{color:#38BDF8}}</style>
             if not chosen:
                 raise HttpError(400, "Selecciona al menos una publicación para repostear.")
 
-        preview.dir.mkdir(parents=True, exist_ok=True)
-        selected = preview.dir / "selected.json"
-        xrepost_fs.write_json(selected, chosen)
-        params["only_urls_file"] = str(selected)
-        job = self.application.start_job("apply", params)
-        job.params["preview_id"] = preview_id
+        # Reserva atómica antes de escribir nada: si otra petición ya está en
+        # curso, se rechaza aquí sin haber tocado el disco. Cada trabajo escribe
+        # su propia selección en su propio directorio, así que dos peticiones
+        # simultáneas nunca pueden mezclar archivos.
+        params["preview_id"] = preview_id
+        job = self.application.reserve_job("apply", params)
+        try:
+            selected = job.dir / "selected.json"
+            xrepost_fs.write_json(selected, chosen)
+            params["only_urls_file"] = str(selected)
+            self.application.launch_job(job)
+        except Exception:
+            self.application.abort_job(job)
+            raise
         self._send_json({"id": job.id, "state": job.state}, 202)
 
     def _api_inbox_apply(self, data: dict) -> None:
@@ -1948,8 +2035,6 @@ a{{color:#38BDF8}}</style>
             "confirm": True,
         }
         params = validate_repost_params(payload, apply=True)
-        folder = xrepost_fs.ensure_dir(self.application.runs / f"inbox-{secrets.token_hex(4)}")
-        selected_file = folder / "selected.json"
         rows = [
             {
                 "fecha": item.get("date", ""),
@@ -1961,9 +2046,17 @@ a{{color:#38BDF8}}</style>
             }
             for item in selected
         ]
-        xrepost_fs.write_json(selected_file, rows)
-        params["only_urls_file"] = str(selected_file)
-        job = self.application.start_job("apply", params)
+        # Igual que en ``/api/apply``: reserva primero y escribe la selección
+        # en el directorio exclusivo del trabajo, nunca en uno compartido.
+        job = self.application.reserve_job("apply", params)
+        try:
+            selected_file = job.dir / "selected.json"
+            xrepost_fs.write_json(selected_file, rows)
+            params["only_urls_file"] = str(selected_file)
+            self.application.launch_job(job)
+        except Exception:
+            self.application.abort_job(job)
+            raise
         self.application.inbox.mark([str(item.get("id")) for item in selected], xrepost_inbox.QUEUED)
         self._send_json({"id": job.id, "state": job.state, "count": len(selected)}, 202)
 

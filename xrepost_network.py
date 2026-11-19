@@ -90,6 +90,44 @@ def config_path() -> Path:
     )
 
 
+def backup_path() -> Path:
+    """Copia de la configuración anterior, usada para revertir un cambio."""
+    dest = config_path()
+    return dest.parent / (dest.name + ".bak")
+
+
+def load_backup() -> dict | None:
+    """Configuración anterior guardada por :func:`save_config`, si existe."""
+    try:
+        raw = json.loads(backup_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    cfg = default_config()
+    for key in cfg:
+        if key in raw:
+            cfg[key] = raw[key]
+    if cfg["mode"] not in MODES:
+        return None
+    return cfg
+
+
+def _atomic_bytes(dest: Path, payload: bytes) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(dest.parent), prefix=".network-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def default_config() -> dict:
     return {
         "mode": "direct",
@@ -117,8 +155,12 @@ def load_config() -> dict:
     return cfg
 
 
-def save_config(data: dict) -> dict:
-    """Valida y guarda la preferencia de forma atómica. Devuelve la config final."""
+def save_config(data: dict, *, backup: bool = True) -> dict:
+    """Valida y guarda la preferencia de forma atómica. Devuelve la config final.
+
+    Con ``backup=True`` conserva la configuración anterior en ``.bak`` para que
+    el panel pueda revertir si Chrome no arranca con la nueva.
+    """
     cfg = default_config()
     for key in cfg:
         if key in data:
@@ -142,6 +184,11 @@ def save_config(data: dict) -> dict:
 
     dest = config_path()
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if backup:
+        try:
+            _atomic_bytes(backup_path(), dest.read_bytes())
+        except OSError:
+            pass
     fd, tmp = tempfile.mkstemp(dir=str(dest.parent), prefix=".network-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:

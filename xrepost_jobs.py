@@ -161,6 +161,22 @@ class JobStore:
             self.store.mutate(mutate)
         return record
 
+    def delete(self, job_id: str) -> bool:
+        """Elimina un registro que nunca llegó a arrancar (reserva abortada)."""
+        deleted = False
+
+        def mutate(data: dict) -> dict:
+            nonlocal deleted
+            items = [item for item in data.get("jobs", []) if isinstance(item, dict)]
+            kept = [item for item in items if item.get("id") != job_id]
+            deleted = len(kept) != len(items)
+            data["jobs"] = kept
+            return data
+
+        with self._lock:
+            self.store.mutate(mutate)
+        return deleted
+
     def update(self, job_id: str, **fields: Any) -> dict:
         if "state" in fields:
             state = fields["state"]
