@@ -287,7 +287,7 @@ xrepost_security.py xrepost_jobs.py xrepost_exports.py xrepost_groups.py
 xrepost_inbox.py xrepost_schedule.py xrepost_stats.py xrepost_selectors.py
 xrepost_state.py
 tests/test_core_modules.py
-docs/ (16 documentos, incluidos ESTADO_TECNICO_INICIAL.md e INFORME_FINAL.md)
+docs/ (22 documentos, incluidos ESTADO_TECNICO_INICIAL.md e INFORME_FINAL.md)
 SECURITY.md CONTRIBUTING.md CHANGELOG.md LICENSE_PENDING.md
 requirements.txt requirements-dev.txt ruff.toml .github/dependabot.yml
 ```

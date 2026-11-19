@@ -40,7 +40,7 @@ jobs:
         run: node --check web/static/app.js
 
       - name: Bandit (seguridad, medium+)
-        run: bandit -q -r . -x ./xrepost-portable,./tests,./web/test_app.py,./web/test_engine_selected.py -ll
+        run: bandit -q -r . -x ./xrepost-portable,./tests,./web/test_app.py,./web/test_engine_selected.py,./.toolenv -ll
 
       - name: pip-audit (dependencias de ejecución)
         run: pip-audit -r requirements.txt --no-deps --disable-pip

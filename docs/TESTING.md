@@ -149,7 +149,7 @@ Comandos verificados (mismos que el CI):
 ```bash
 .toolenv/bin/ruff check --select E9,F63,F7,F82 .
 .toolenv/bin/shellcheck -S error xrepost.sh iniciar.sh web/run.sh ci.sh sync_portable.sh xrepost-chrome.sh
-.toolenv/bin/bandit -q -r . -x ./xrepost-portable,./tests,./web/test_app.py,./web/test_engine_selected.py -ll
+.toolenv/bin/bandit -q -r . -x ./xrepost-portable,./tests,./web/test_app.py,./web/test_engine_selected.py,./.toolenv -ll
 .toolenv/bin/pip-audit -r requirements.txt --no-deps --disable-pip
 .toolenv/bin/gitleaks detect --source . --no-git --redact --verbose
 ```
