@@ -324,7 +324,7 @@ La revisión posterior añadió:
 
 - 180 pruebas + 32 subpruebas.
 - 91 % en los módulos de negocio (umbral de CI: 90 %); 86 % total.
-- 37 pruebas nuevas para `fs`, `filters`, `cdp`, `schedule`, `security`,
+- 38 pruebas nuevas para `fs`, `filters`, `cdp`, `schedule`, `security`,
   `groups`, `history` y `state`.
 - `bandit -ll`: 0 hallazgos medium/high (12 low de `try/except pass`
   justificados).

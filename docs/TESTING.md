@@ -11,7 +11,7 @@
 | Cobertura (módulos de negocio) | **91 %** |
 | Cobertura total (incluye CLI y panel) | **86 %** |
 | Python | 3.14.4 |
-| Duración aproximada | 45 s |
+| Duración aproximada | 42 s |
 | Navegador necesario | No |
 | Credenciales necesarias | No |
 

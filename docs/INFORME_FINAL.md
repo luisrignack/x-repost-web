@@ -73,7 +73,8 @@ evidencia y prueba necesaria están en
 
 - Trabajos persistentes, cancelación, timeout y recuperación como
   `INTERRUPTED`.
-- Bandeja de revisión por ID con decisiones y reconciliación con el motor.
+- Bandeja de revisión por ID con decisiones y reconciliación con el motor;
+  un undo confirmado la actualiza a `UNDONE`.
 - Perfiles de filtros, grupos de cuentas con alias/favoritos, importación y
   exportación CSV.
 - Programación de **solo previsualización**; nunca repost automático.
@@ -185,8 +186,8 @@ real. Es una decisión consciente, no un olvido (ver sección 16).
 
 ## 9. Pruebas incorporadas
 
-- 37 pruebas nuevas respecto a la línea base en `tests/test_core_modules.py`
-  (hoy 61 en ese archivo), más las ampliaciones de `web/test_app.py`.
+- 38 pruebas nuevas respecto a la línea base en `tests/test_core_modules.py`
+  (hoy 62 en ese archivo), más las ampliaciones de `web/test_app.py`.
 - Cobertura directa de: sistema de archivos seguro, almacén JSON, filtros,
   CDP, sesiones, fuerza bruta, CSRF, trabajos y transiciones, exportaciones,
   grupos, bandeja, programación, estadísticas, historial, backups y máquina de
@@ -200,7 +201,7 @@ real. Es una decisión consciente, no un olvido (ver sección 16).
 
 | Comprobación | Resultado |
 | --- | --- |
-| `pytest` | **180 passed, 32 subtests passed** (~47 s) |
+| `pytest` | **180 passed, 32 subtests passed** (~42 s) |
 | Python 3.12 (CI) | Misma suite, mismos resultados |
 | Python 3.10+ | Sintaxis compatible (se corrigió la f-string de `xrepost_exports.py`) |
 | Ruff (`E9,F63,F7,F82`) | Sin hallazgos (re-verificado 2026-11-18) |
@@ -338,10 +339,11 @@ ABRIR_LA_APLICACION.md
   importación de cuentas (el endpoint y el parser existen). No hay navegación
   lateral ni secciones Dashboard/Exportaciones/Configuración separadas; las
   funciones están en las ocho pestañas.
-- **`UNDO_PENDING`/`UNDONE`**: la máquina de estados los define y valida; el
-  flujo de undo registra el evento en el historial y la bandeja se reconcilia,
-  pero no se actualiza el estado de la bandeja en todos los casos de undo
-  manual.
+- **Reconciliación de undo**: tras un undo confirmado, la bandeja pasa el
+  elemento por `UNDO_PENDING` y lo deja en `UNDONE`. Como el historial guarda
+  minutos (no segundos), se exige además que el último evento de la
+  publicación sea ese undo; así un undo antiguo seguido de un repost nuevo no
+  se confunde. Un undo fallido deja el elemento como estaba.
 - **Modularización de `web/app.py`**: la lógica de dominio está extraída, pero
   el servidor y los handlers siguen en un archivo grande.
 - **Licencia**: no hay `LICENSE`; el titular no ha elegido una. Se documenta en
