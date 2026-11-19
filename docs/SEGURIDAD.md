@@ -205,7 +205,7 @@ Comprobaciones manuales recomendadas:
 
 - `gitleaks` se ejecuta en CI sobre el árbol de trabajo (`--no-git`) y no debe
   encontrar nada. El historial de git contiene un token de ejemplo de una
-  ejecución local en el commit `10d3896`; ya no es válido, pero un escaneo con
+  ejecución local en el commit `17258ce4`; ya no es válido, pero un escaneo con
   historial lo marcaría hasta que se purifique la rama.
 - `pip-audit` audita `requirements.txt`, que no declara dependencias de
   ejecución: la aplicación usa solo la biblioteca estándar.

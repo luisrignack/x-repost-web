@@ -333,7 +333,7 @@ La revisión posterior añadió:
 ## Deuda pendiente
 
 - Retirar la cookie heredada `xrepost_token` (hoy solo permite lectura).
-- Purificar el token de ejemplo del historial de git (`10d3896`); requiere
+- Purificar el token de ejemplo del historial de git (`17258ce4`); requiere
   reescribir la rama y `push --force`.
 - Resolver los errores de `mypy` de los módulos históricos (hoy informativo).
 - Añadir pruebas end-to-end contra una cuenta de prueba cuando esté

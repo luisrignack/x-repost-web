@@ -250,7 +250,7 @@ Ejecutadas de nuevo el 2026-11-18 con las versiones fijadas del proyecto
 | Bandit `-ll` | 0 medium / 0 high; 12 low (`try/except pass` de cierre de recursos) | Bloqueante en medium+ |
 | pip-audit | Sin dependencias de ejecución; «No known vulnerabilities found» | Bloqueante |
 | Gitleaks (árbol actual) | «no leaks found» | Bloqueante |
-| Gitleaks (historial) | Detecta el token de ejemplo del commit `10d3896`, ya inválido | Pendiente de purga |
+| Gitleaks (historial) | Detecta el token de ejemplo del commit `17258ce4`, ya inválido | Pendiente de purga |
 | Ruff | `All checks passed!` en `E9,F63,F7,F82` | Bloqueante |
 | ShellCheck | Sin errores (`-S error`) | Bloqueante |
 | mypy | 33 errores en módulos nuevos (métodos `list` que eclipsan el tipo, etc.) | Informativo |
@@ -332,7 +332,7 @@ ABRIR_LA_APLICACION.md
 - **Cookie heredada `xrepost_token`**: ya no se emite; se acepta solo para
   lectura si un cliente antiguo la conserva, nunca para escribir. Retirar su
   aceptación exige migrar clientes antiguos.
-- **Token en el historial de git**: el commit `10d3896` contiene un token de
+- **Token en el historial de git**: el commit `17258ce4` contiene un token de
   ejemplo ya inválido. Purificarlo requiere reescribir la rama y
   `push --force`, no ejecutado.
 - **Interfaz**: no hay paginación de tablas, botón de copiar enlace ni botón de
@@ -408,7 +408,7 @@ ABRIR_LA_APLICACION.md
 | F-07 | Mensajes/éxito genéricos | P1 | Estados reales por publicación | Pruebas de snapshot | RESUELTO |
 | M-01 | Estado duplicado | P2 | `xrepost_history.py` compartido | Pruebas de historial | RESUELTO |
 | M-02 | Pocas pruebas | P1 | 180 pruebas + 32 subtests | Suite completa | RESUELTO |
-| M-03 | CI débil | P3 | Ruff, ShellCheck, Bandit, pip-audit, Gitleaks, cobertura, SBOM | CI verde | PARCIALMENTE RESUELTO |
+| M-03 | CI débil | P3 | Ruff, ShellCheck, Bandit, pip-audit, Gitleaks, cobertura, SBOM | CI verde | RESUELTO |
 | M-04 | Portable desincronizada | P2 | Lista ampliada y `--check` | `ci.sh` | RESUELTO |
 | V-01 | Ruff F821 | P1 | Shim `_injected()` | Ruff local/CI | RESUELTO |
 | V-02 | F-string 3.12 | P1 | Reescritura 3.10+ | `py_compile` 3.10+ | RESUELTO |
