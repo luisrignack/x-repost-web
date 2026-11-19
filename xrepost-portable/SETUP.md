@@ -15,21 +15,41 @@ xrepost-portable/
 ├── install-deps.sh          # requirements check + consent-based installation
 ├── xrepost-icon.png         # application icon used by the shortcut
 ├── requirements.txt         # explicit audit/SBOM entry point (no packages)
+├── ci.sh                    # local quality gate (tests + syntax + portable)
 ├── SETUP.md                 # this guide
 ├── README.md                # full project documentation (Spanish)
+├── ABRIR_LA_APLICACION.md   # step-by-step access guide (Spanish)
 ├── xrepost.sh               # CLI entry point
 ├── xrepost.py               # engine (runs inside the browser-use harness)
+├── xrepost-chrome.sh        # dedicated Chrome profile + CDP launcher
 ├── xrepost_accounts.py      # remembered accounts + interactive prompt
 ├── xrepost_hashtags.py      # remembered hashtags + quote normalization
 ├── xrepost_labels.py        # shared result labels
 ├── xrepost_history.py       # shared history state (engine + panel)
+├── xrepost_selectors.py     # DOM selectors with alternatives
+├── xrepost_network.py       # proxy/PAC preference and Chrome flags
+├── xrepost_fs.py            # atomic, permission-safe file operations
+├── xrepost_store.py         # concurrent JSON store
+├── xrepost_filters.py       # filter spec, profiles, engine env
+├── xrepost_cdp.py           # CDP endpoint/process/profile validation
+├── xrepost_security.py      # sessions, CSRF, brute-force blocking, cookies
+├── xrepost_jobs.py          # persistent jobs and validated state machine
+├── xrepost_state.py         # per-publication canonical states
+├── xrepost_inbox.py         # review inbox with decisions
+├── xrepost_groups.py        # account groups, aliases and favourites
+├── xrepost_schedule.py      # preview-only scheduling
+├── xrepost_stats.py         # statistics with explicit denominator
+├── xrepost_exports.py       # CSV/Markdown/JSON/HTML/PDF exports
+├── proxy_empresa.pac        # corporate proxy PAC
+├── proxy_auto.pac           # automatic proxy PAC
 ├── pytest.ini               # test collection: tests/ + web/
 ├── web/
 │   ├── app.py               # local web panel (stdlib only)
 │   ├── run.sh               # panel-only launcher
 │   ├── static/              # panel UI (HTML/JS/CSS)
 │   └── test_*.py            # panel + engine tests
-└── tests/                   # accounts/hashtags/history tests
+└── tests/                   # accounts, hashtags, history, network,
+                             # start script and core-module tests
 ```
 
 ## Requirements
@@ -119,11 +139,12 @@ If it is missing, add `export PATH="$HOME/.local/bin:$PATH"` to your
 ```bash
 python3 -m pip install pytest   # or: uv tool install pytest / apt install python3-pytest
 cd ~/xrepost-portable
-python3 -m pytest -q            # expected: 180 passed + 32 subtests
+python3 -m pytest -q            # expected: 180 passed, 32 subtests passed
 ```
 
 All tests run offline with a simulated browser — no Chrome or X account
-needed.
+needed. If you also want the static checks, run `./ci.sh` (needs `node`; it
+checks syntax, the panel contract and the portable copy).
 
 ## Step 5 — run
 
@@ -194,6 +215,11 @@ X_APPLY=1 ./xrepost.sh usuario1 01/11/2026 --quote "#ETECSA #Cuba"   # quote-rep
 ./xrepost.sh --history 20                      # last 20 history events
 ./xrepost.sh --undo-last                       # undo the last batch
 ./xrepost.sh --undo https://x.com/user/status/123   # undo one repost
+./xrepost.sh --stats --days 30                 # statistics with explicit denominator
+./xrepost.sh --diagnose                        # read-only history/environment check
+./xrepost.sh --backup                          # checksummed history backup
+./xrepost.sh --restore RUTA                    # verified restore
+./xrepost.sh --diagnose --strict-cdp           # require a local, owned CDP browser
 ```
 
 ## Where your data lives
@@ -203,10 +229,19 @@ X_APPLY=1 ./xrepost.sh usuario1 01/11/2026 --quote "#ETECSA #Cuba"   # quote-rep
 | `~/.local/state/xrepost/history.jsonl` | every repost/undo event (append-only) |
 | `~/.local/state/xrepost/accounts.json` | remembered accounts for autocomplete |
 | `~/.local/state/xrepost/hashtags.json` | remembered hashtags |
+| `~/.local/state/xrepost/inbox.json` | review inbox and decisions |
+| `~/.local/state/xrepost/profiles.json` | saved filter profiles |
+| `~/.local/state/xrepost/groups.json` | account groups and aliases |
+| `~/.local/state/xrepost/accounts_meta.json` | favourites and per-account metadata |
+| `~/.local/state/xrepost/schedules.json` | preview-only schedules |
+| `~/.local/state/xrepost/network.json` | proxy/PAC preference |
+| `~/.local/state/xrepost/panel-token` | master token (0600, never in the URL) |
+| `~/.local/state/xrepost/panel-url` | one-use bootstrap URL (0600) |
+| `~/.local/state/xrepost/history-backups/` | verified SHA-256 history backups |
 | `~/.local/state/xrepost/chrome-profile/` | Chrome profile with your X session |
 | `~/.local/state/xrepost/panel.log` | panel output from `start.sh` |
 | `~/.cache/xrepost-web/panel-profile/` | Chrome profile of the panel window (separate from the CDP one) |
-| `<folder>/web/.runs/` | per-run CSV/Markdown exports |
+| `<folder>/web/.runs/` | per-run CSV/Markdown exports and `jobs.json` |
 
 To move your history to the new PC, copy the `~/.local/state/xrepost/`
 directory (the Chrome profile is optional — you can just log in again).
@@ -219,7 +254,7 @@ directory (the Chrome profile is optional — you can just log in again).
 | `falta el CLI browser-use` | Step 2; check `~/.local/bin` is on PATH. |
 | Chrome opens but CDP never responds | Another Chrome instance holds that profile. Close it (or pick another profile with `XREPOST_CHROME_PROFILE=/path`) and retry. Never use your default profile: Chrome 136+ blocks remote debugging there. |
 | Panel says "Chrome no detectado" | Chrome must be running with `--remote-debugging-port=9222` (start.sh does this). Check: `curl -s http://127.0.0.1:9222/json/version`. |
-| Browser shows "Panel bloqueado" / 401 | Open the exact URL printed in the terminal (it carries the token). Tokens change on every start. |
+| Browser shows "Panel bloqueado" / 401 | Open the exact URL printed by `iniciar.sh` or run `./abrir-xrepost.sh` again to renew the one-use link. The link stops working after the first open. |
 | Port 8765 busy | The panel tries 8766–8769 automatically; or set `XREPOST_PORT=9000 ./start.sh`. |
 | `no encontré el botón de repost` on every post | You are not logged in to X in the CDP Chrome window, or X changed its DOM. Log in first; re-run. |
 | A run navigated one of your tabs | The engine opens its own tab (`about:blank`) and closes it at the end, so this only happens with an old copy: replace `xrepost.py`. If it already happened, reopen the panel URL printed in the terminal. |
@@ -228,8 +263,17 @@ directory (the Chrome profile is optional — you can just log in again).
 ## Security notes
 
 - The panel listens **only on 127.0.0.1**; it refuses other interfaces.
-- Each start generates a random token; keep the printed URL private. Do not
-  use a fixed guessable `--token` outside of tests.
+- The link printed by `iniciar.sh` carries a **single-use bootstrap token**,
+  never the master token. Opening it creates an `HttpOnly` session and the
+  link stops working. Keep it private.
+- Every state-changing request requires the session CSRF token and a matching
+  `Origin`/`Host`; the panel rejects cross-site writes.
+- CDP is accepted only on literal loopback with an explicit port, a Chrome
+  process owned by the dedicated profile and a `/json/version` response.
+  `--strict-cdp` turns that check into a hard requirement.
+- The master token is stored in `panel-token` with mode `0600` and is used by
+  command-line clients through `X-Token`; it is never written to the URL or
+  the log.
 - Reposting requires explicit confirmation in the panel (or `X_APPLY=1` in
   the CLI), enforces a minimum 5 s pause, and stops after 3 consecutive
   failures. Respect X's automation rules and keep volumes modest.
